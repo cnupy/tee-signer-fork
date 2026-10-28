@@ -45,8 +45,8 @@ var rootSHA256 = map[string]string{
 	"isrg-root-x2.pem":    "69729b8e15a86efc177a57afb7171dfc64add28c2fca8cf1507e34453ccb1470",
 }
 
-// Server is a public NTS server and who runs it.
-type Server struct {
+// PublicServer is a public NTS server and who runs it.
+type PublicServer struct {
 	Host     string
 	Operator string
 	Roots    []string // files under roots/
@@ -54,47 +54,62 @@ type Server struct {
 
 // PublicServers are the four NTS operators the runner uses. PTB runs ptbtime1, 2
 // and 3; one of them counts, since the quorum needs distinct operators.
-var PublicServers = []Server{
+var PublicServers = []PublicServer{
 	{Host: "time.cloudflare.com", Operator: "cloudflare", Roots: []string{"sslcom-root-ecc.pem"}},
 	{Host: "nts.netnod.se", Operator: "netnod", Roots: []string{"isrg-root-x1.pem", "isrg-root-x2.pem"}},
 	{Host: "ptbtime1.ptb.de", Operator: "ptb", Roots: []string{"isrg-root-x1.pem", "isrg-root-x2.pem"}},
 	{Host: "ntppool1.time.nl", Operator: "time.nl", Roots: []string{"isrg-root-x1.pem", "isrg-root-x2.pem"}},
 }
 
-// RootPool builds the pool of the named root files, each checked against
-// its pinned hash.
-func RootPool(files []string) (*x509.CertPool, error) {
-	pool := x509.NewCertPool()
-	if err := AddRoots(pool, files); err != nil {
-		return nil, err
+// RootsPEM is the named root files as one PEM, each checked against its
+// pinned hash: what a Server carries into the core, which hands it to the
+// key exchange.
+func RootsPEM(files []string) ([]byte, error) {
+	var out []byte
+	for _, name := range files {
+		block, _, err := pinnedRoot(name)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, pem.EncodeToMemory(block)...)
 	}
-	return pool, nil
+	return out, nil
 }
 
 // AddRoots adds the named root files to pool, each checked against its
-// pinned hash.
+// pinned hash: the coarse check's HTTP client trusts the operators' roots
+// too.
 func AddRoots(pool *x509.CertPool, files []string) error {
 	for _, name := range files {
-		want, ok := rootSHA256[name]
-		if !ok {
-			return fmt.Errorf("nts: no pinned root %q", name)
-		}
-		data, err := rootFiles.ReadFile("roots/" + name)
+		_, cert, err := pinnedRoot(name)
 		if err != nil {
 			return err
-		}
-		block, _ := pem.Decode(data)
-		if block == nil || block.Type != "CERTIFICATE" {
-			return fmt.Errorf("nts: roots/%s is not a PEM certificate", name)
-		}
-		if sum := sha256.Sum256(block.Bytes); hex.EncodeToString(sum[:]) != want {
-			return fmt.Errorf("nts: roots/%s has sha256 %x, pinned %s", name, sum, want)
-		}
-		cert, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			return fmt.Errorf("nts: roots/%s: %w", name, err)
 		}
 		pool.AddCert(cert)
 	}
 	return nil
+}
+
+// pinnedRoot reads one embedded root and checks it against its pinned hash.
+func pinnedRoot(name string) (*pem.Block, *x509.Certificate, error) {
+	want, ok := rootSHA256[name]
+	if !ok {
+		return nil, nil, fmt.Errorf("nts: no pinned root %q", name)
+	}
+	data, err := rootFiles.ReadFile("roots/" + name)
+	if err != nil {
+		return nil, nil, err
+	}
+	block, _ := pem.Decode(data)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return nil, nil, fmt.Errorf("nts: roots/%s is not a PEM certificate", name)
+	}
+	if sum := sha256.Sum256(block.Bytes); hex.EncodeToString(sum[:]) != want {
+		return nil, nil, fmt.Errorf("nts: roots/%s has sha256 %x, pinned %s", name, sum, want)
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("nts: roots/%s: %w", name, err)
+	}
+	return block, cert, nil
 }
