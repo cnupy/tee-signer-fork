@@ -135,6 +135,8 @@ echo "$*" >>"$DOCKER_LOG"
 case "$1 $2" in
   "image inspect") echo "$FAKE_ID" ;;
   "buildx build") ;;
+  "buildx version") echo "github.com/docker/buildx v0.30.0" ;;
+  "info "*) echo "$FAKE_DRIVER_STATUS" ;;
   *) exit 97 ;;
 esac
 EOF
@@ -143,6 +145,35 @@ EOF
   # shellcheck disable=SC2016 # expanded by the stub, not here
   printf '#!/bin/sh\necho "${PWD##*/} $*" >>"$GO_LOG"\n' >"$stub/go"
   chmod +x "$stub"/*
+
+  # The host programs the lane checks for, as stubs, so the tests do not
+  # depend on what this host has installed. unshare fails as on a stock
+  # Ubuntu 24.04 when FAKE_UNSHARE_FAIL is set.
+  local hstub="$TMP/lane-host" cross_nm=aarch64-linux-gnu-nm p
+  [ "$(uname -m)" != aarch64 ] || cross_nm=x86_64-linux-gnu-nm
+  mkdir -p "$hstub"
+  for p in nm aarch64-linux-gnu-nm x86_64-linux-gnu-nm readelf file cc jq ip; do
+    printf '#!/bin/sh\nexit 0\n' >"$hstub/$p"
+  done
+  cat >"$hstub/unshare" <<'EOF'
+#!/bin/sh
+[ -z "$FAKE_UNSHARE_FAIL" ] || { echo "unshare: write failed /proc/self/uid_map: Operation not permitted" >&2; exit 1; }
+exit 0
+EOF
+  chmod +x "$hstub"/*
+  # hostbin: links to every program on PATH (the first of a name wins) and
+  # to the stubs, in one folder that is the lanes' whole PATH. A test hides
+  # a program by moving its link out (lane's hide).
+  local hostbin="$TMP/hostbin" dir dirs i hide=""
+  mkdir -p "$hostbin" "$TMP/hidden"
+  IFS=: read -ra dirs <<<"$PATH"
+  for ((i = ${#dirs[@]} - 1; i >= 0; i--)); do
+    dir="${dirs[$i]}"
+    case "$dir" in /mnt/* | "") continue ;; esac
+    [ -d "$dir" ] || continue
+    find "$dir" -maxdepth 1 \( -type f -o -type l \) -exec ln -sf -t "$hostbin" {} +
+  done
+  ln -sf -t "$hostbin" "$hstub"/* "$stub"/*
 
   # release/build.sh fetch verifies every module it fetches.
   mkdir -p "$d/fetch/scripts" "$d/fetch/release" "$d/fetch/tee-signer" "$d/fetch/platform-aws" "$d/fetch/signer-admin"
@@ -168,13 +199,18 @@ EOF
   }
   # lane NAME WANT [VAR=VALUE...]: runs the lane with those variables. WANT
   # run: it gets to its first docker run; stop: it fails before any docker
-  # run (it may build or inspect the builder image).
+  # run (it may build or inspect the builder image). The programs named in
+  # hide are not on its PATH.
   lane() {
-    local name="$1" want="$2" rc=0 ran=no
+    local name="$1" want="$2" rc=0 ran=no p
     shift 2
     : >"$TMP/docker.log"
-    (cd "$d/repo" && env DOCKER_LOG="$TMP/docker.log" FAKE_ID="$id" PATH="$stub:$PATH" "$@" \
+    for p in $hide; do mv "$hostbin/$p" "$TMP/hidden/"; done
+    (cd "$d/repo" && env -u SIGNER_BUILDER_IMAGE DOCKER_LOG="$TMP/docker.log" FAKE_ID="$id" \
+      FAKE_DRIVER_STATUS='[["driver-type","io.containerd.snapshotter.v1"]]' FAKE_UNSHARE_FAIL= PATH="$hostbin" "$@" \
       bash release/release-build.sh "$d/dist") >"$TMP/out" 2>&1 || rc=$?
+    for p in $hide; do mv "$TMP/hidden/$p" "$hostbin/"; done
+    hide=""
     ! grep -q '^run ' "$TMP/docker.log" || ran=yes
     if { [ "$want" = run ] && [ "$rc" = 97 ] && [ "$ran" = yes ]; } ||
       { [ "$want" = stop ] && [ "$rc" != 0 ] && [ "$ran" = no ]; }; then
@@ -200,6 +236,35 @@ EOF
   lane "release-build: takes a RELEASE_BUILDER_IMAGE of the pinned id" run RELEASE_BUILDER_IMAGE=builder:local RELEASE_BUILDER_ID="$id"
   if grep -q "$id" "$TMP/out"; then ok "release-build: prints the builder image id"; else bad "release-build: prints the builder image id"; fi
   lane "release-build: refuses a Dockerfile build of another id than RELEASE_BUILDER_ID" stop RELEASE_BUILDER_ID="$other"
+
+  # A build/ left by an earlier lane holds the read-only Go module cache.
+  repo
+  mkdir -p "$d/repo/build/gomod" && : >"$d/repo/build/gomod/x"
+  lane "release-build: refuses a build/ left by an earlier lane" stop
+  if grep -qF 'chmod -R u+w build && rm -rf build' "$TMP/out"; then ok "release-build: says how to remove build/"; else bad "release-build: says how to remove build/: $(tail -n 1 "$TMP/out")"; fi
+  # The host checks, before any long step.
+  repo
+  hide="$cross_nm"
+  lane "release-build: refuses a host without $cross_nm" stop
+  if grep -q "$cross_nm.*binutils-" "$TMP/out"; then ok "release-build: names the package of $cross_nm"; else bad "release-build: names the package of $cross_nm: $(tail -n 1 "$TMP/out")"; fi
+  repo
+  lane "release-build: refuses a host where unshare -rn fails" stop FAKE_UNSHARE_FAIL=1
+  if grep -q 'kernel.apparmor_restrict_unprivileged_userns' "$TMP/out"; then ok "release-build: names the userns sysctl"; else bad "release-build: names the userns sysctl: $(tail -n 1 "$TMP/out")"; fi
+  repo
+  lane "release-build: refuses a docker without the containerd image store" stop FAKE_DRIVER_STATUS='[["Backing Filesystem","extfs"]]'
+  if grep -q 'containerd image store' "$TMP/out"; then ok "release-build: names the containerd image store"; else bad "release-build: names the containerd image store: $(tail -n 1 "$TMP/out")"; fi
+
+  # nitro-eif.sh shows why the runner build failed: a made-up repo whose
+  # scripts/build-runner.sh fails the way a missing host program does.
+  local n="$d/nitro"
+  rm -rf "$n"
+  mkdir -p "$n/scripts"
+  cp "$HERE/../scripts/common.sh" "$HERE/../scripts/nitro-eif.sh" "$n/scripts/"
+  printf '#!/bin/sh\nexit 0\n' >"$n/scripts/fetch.sh"
+  printf '#!/bin/sh\necho "build-nts.sh: line 92: aarch64-linux-gnu-nm: command not found" >&2\nexit 127\n' >"$n/scripts/build-runner.sh"
+  expect "nitro-eif: fails when the runner build fails" 1 env -u SIGNER_BUILDER_IMAGE DOCKER_LOG="$TMP/docker.log" FAKE_ID="$id" \
+    PATH="$hostbin" NITRO_CLI_REUSE=1 bash "$n/scripts/nitro-eif.sh" aarch64
+  if grep -q 'aarch64-linux-gnu-nm: command not found' "$TMP/out"; then ok "nitro-eif: prints the end of the runner build's log"; else bad "nitro-eif: prints the end of the runner build's log: $(tail -n 2 "$TMP/out")"; fi
 }
 
 # release/compare.sh on made-up lane folders.

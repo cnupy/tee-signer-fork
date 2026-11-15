@@ -16,10 +16,24 @@
 #   5. copy what a release ships into DIST, with DIST/SHA256SUMS. The names
 #      carry the chain, and -test for IMAGE_VARIANT=test.
 #
-# Needs Docker with the containerd image store and buildx, qemu-user-static
-# (binfmt_misc, F flag) for the arm64 linuxkit, az with the confcom
-# extension at the version of AZ_CONFCOM_VERSION, python3, jq, and a Go of
-# any version on PATH (it only reads build info; the build uses the builder's).
+# Host prerequisites. The lane checks them before its first long step and
+# names the fix of each one that is missing; it installs nothing.
+#   - Docker with the containerd image store and buildx.
+#   - qemu-user-static (binfmt_misc entry qemu-aarch64 with the F flag) for
+#     the arm64 linuxkit, on an x86_64 host. Docker Desktop has its own.
+#   - az with the confcom extension at the version of AZ_CONFCOM_VERSION.
+#   - git, python3, jq, file, cc (build-essential), nm and readelf
+#     (binutils), and the other arch's nm (binutils-aarch64-linux-gnu on an
+#     x86_64 host, binutils-x86-64-linux-gnu on an arm64 one): the NTS step
+#     checks its archives with them on the host. scripts/deps.sh installs
+#     these.
+#   - A Go of any version on PATH (it only reads build info; the build uses
+#     the builder's).
+#   - unshare and ip (util-linux, iproute2), and unprivileged user
+#     namespaces: the Azure policy step runs in "unshare -rn". Ubuntu 24.04
+#     turns them off; turn them on with
+#     sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+#     (/etc/sysctl.d/ to keep it after a reboot).
 set -euo pipefail
 umask 022
 DIST="${1:?usage: release-build.sh DIST}"
@@ -43,11 +57,49 @@ tree_clean() {
   [ -z "$left" ] || die "the tree is not a clean checkout: $(echo "$left" | head -n 5 | tr '\n' ' ')"
 }
 # A lane starts without build/ (blst, the module cache and other outputs of
-# earlier builds) or any other ignored file; logs/ holds only logs.
+# earlier builds) or any other ignored file; logs/ holds only logs. The Go
+# module cache in build/gomod is read-only, so a plain rm -rf fails on it.
+[ ! -e build ] || die "build/ is left from an earlier build; a lane starts without it. Remove it with: chmod -R u+w build && rm -rf build"
 tree_clean 'logs/'
 [ -z "${SIGNER_BUILD_OVERLAY_DIR:-}" ] || die "a release never uses the build overlay"
+
+# The host programs and settings the lane uses outside its containers (see
+# the header). Every missing one is reported, then the lane stops.
+missing=()
+# need PROGRAM FIX
+need() { command -v "$1" >/dev/null 2>&1 || missing+=("$1 not found: $2"); }
+need git "apt-get install git"
+need docker "install Docker"
+need python3 "apt-get install python3"
+need jq "apt-get install jq"
+need file "apt-get install file"
+need go "install a Go of any version and put it on PATH"
+need cc "apt-get install build-essential"
+need readelf "apt-get install binutils"
+need unshare "apt-get install util-linux"
+need ip "apt-get install iproute2"
+for a in x86_64 aarch64; do
+  t="$(tool_for "$a" nm)"
+  if [ "$t" = nm ]; then need nm "apt-get install binutils"; else need "$t" "apt-get install binutils-${a//_/-}-linux-gnu"; fi
+done
 got="$(az extension show --name confcom --query version -o tsv 2>/dev/null || true)"
-[ "$got" = "$AZ_CONFCOM_VERSION" ] || die "az confcom is '$got', want $AZ_CONFCOM_VERSION (az extension add --name confcom --version $AZ_CONFCOM_VERSION)"
+[ "$got" = "$AZ_CONFCOM_VERSION" ] || missing+=("az confcom is '$got', want $AZ_CONFCOM_VERSION (az extension add --name confcom --version $AZ_CONFCOM_VERSION)")
+if command -v unshare >/dev/null 2>&1 && ! unshare -rn true >/dev/null 2>&1; then
+  missing+=("unshare -rn fails: unprivileged user namespaces are off (Ubuntu 24.04: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0)")
+fi
+if command -v docker >/dev/null 2>&1; then
+  docker buildx version >/dev/null 2>&1 || missing+=("docker buildx not found: install the buildx plugin (docker-buildx-plugin)")
+  if ! ds="$(docker info --format '{{json .DriverStatus}}' 2>/dev/null)"; then
+    missing+=("docker info failed: is the Docker daemon running and reachable by this user?")
+  else case "$ds" in
+    *io.containerd.snapshotter*) ;;
+    *) missing+=("docker does not use the containerd image store: set \"features\": {\"containerd-snapshotter\": true} in /etc/docker/daemon.json and restart dockerd (Docker Desktop: Settings, General, Use containerd for pulling and storing images)") ;;
+  esac; fi
+fi
+if [ ${#missing[@]} -gt 0 ]; then
+  printf 'release-build: %s\n' "${missing[@]}" >&2
+  die "the host lacks ${#missing[@]} prerequisite(s), see the header of release/release-build.sh"
+fi
 
 # The time stamp of the licence archives and SBOMs: the commit time of HEAD,
 # or SOURCE_DATE_EPOCH when set (the tagged commit's time, when the release
@@ -87,6 +139,14 @@ bash scripts/fetch-nts.sh
 # The fetch steps had network and the tree read-write: they may write only
 # into build/ and logs/.
 tree_clean 'build/|logs/'
+# The arm64 linuxkit of the EIF build runs through qemu-user (binfmt_misc,
+# F flag). Check it now rather than after the runner builds; nitro-eif.sh
+# checks it again.
+if [ "$HOST_ARCH" != aarch64 ]; then
+  docker run --rm --pull=never --network none --entrypoint /blobs/linuxkit -v "$NITRO_CLI_DIR/blobs/aarch64:/blobs:ro" \
+    "signer-cloud/nitro-cli:$NITRO_CLI_TAG-$HOST_ARCH" version >/dev/null 2>&1 ||
+    die "the aarch64 linuxkit does not run on this $HOST_ARCH host: needs qemu-user-static (binfmt_misc entry qemu-aarch64 with the F flag; apt-get install qemu-user-static)"
+fi
 # The C core for both arches, in the builder: scripts/build-runner.sh also
 # links a host-arch runner (the no-platform-tag check) when it builds for
 # aarch64 only, and a fresh checkout has no host-arch core yet.

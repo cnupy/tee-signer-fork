@@ -96,7 +96,10 @@ if [ "${NITRO_CLI_REUSE:-}" = 1 ]; then
 else
   bash "$ROOT/scripts/nitro-cli-image.sh" >/dev/null
 fi
-run_build_runner "$arch" >/dev/null 2>&1
+# The runner build writes to its own log; on failure the end of it is printed.
+RUNNER_LOG="$OUT/build-runner-$arch.log"
+run_build_runner "$arch" >"$RUNNER_LOG" 2>&1 ||
+  { tail -n 30 "$RUNNER_LOG" >&2; die "the runner build for $arch failed (log: $RUNNER_LOG)"; }
 RUNNER="$BUILD/$arch/bin/runner-aws$SUFFIX"
 [ -x "$RUNNER" ] || die "$RUNNER was not built"
 if grep -qa -- "allow-import" "$RUNNER"; then
