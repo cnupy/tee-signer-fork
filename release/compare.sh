@@ -61,4 +61,4 @@ for j in "${eifs[@]}"; do
   done
 done
 [ "$fail" = 0 ] || { echo "compare: the two lanes differ" >&2; exit 1; }
-echo "compare: the two lanes are identical (EIF: same PCRs)"
+echo "compare: the two lanes are identical (the EIF files are not compared byte for byte; their PCRs in build-enclave.json are equal)"

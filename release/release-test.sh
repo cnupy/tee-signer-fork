@@ -182,8 +182,9 @@ EOF
   # The host programs the lane checks for, as stubs, so the tests do not
   # depend on what this host has installed. unshare fails as on a stock
   # Ubuntu 24.04 when FAKE_UNSHARE_FAIL is set.
+  # The lane runs as on an x86_64 host whatever this host is, so the
+  # cross nm is always the aarch64 one.
   local hstub="$TMP/lane-host" cross_nm=aarch64-linux-gnu-nm p
-  [ "$(uname -m)" != aarch64 ] || cross_nm=x86_64-linux-gnu-nm
   mkdir -p "$hstub"
   for p in nm aarch64-linux-gnu-nm x86_64-linux-gnu-nm readelf file cc jq ip; do
     printf '#!/bin/sh\nexit 0\n' >"$hstub/$p"
@@ -281,7 +282,7 @@ EOF
     rm -rf "$d/dist"
     for p in $hide; do mv "$hostbin/$p" "$TMP/hidden/"; done
     (cd "${cwd:-$d/repo}" && env -u SIGNER_BUILDER_IMAGE DOCKER_LOG="$TMP/docker.log" FAKE_ID="$id" \
-      FAKE_DRIVER_STATUS='[["driver-type","io.containerd.snapshotter.v1"]]' FAKE_UNSHARE_FAIL= FAKE_UNAME= \
+      FAKE_DRIVER_STATUS='[["driver-type","io.containerd.snapshotter.v1"]]' FAKE_UNSHARE_FAIL= FAKE_UNAME=x86_64 \
       FAKE_RUN_OK= FAKE_SBOM_EMPTY= PATH="$hostbin" "$@" \
       bash "$d/repo/release/release-build.sh" "${dist:-$d/dist}") >"$TMP/out" 2>&1 || rc=$?
     for p in $hide; do mv "$TMP/hidden/$p" "$hostbin/"; done
