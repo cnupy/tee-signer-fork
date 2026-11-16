@@ -4,6 +4,7 @@ package server
 
 import (
 	"encoding/binary"
+	"slices"
 	"strings"
 	"testing"
 
@@ -30,10 +31,10 @@ type dvShare struct {
 	groupSk, sk [32]byte
 	group, pk   backend.Pubkey
 	commitments []backend.Pubkey
-	index       uint8
+	index       uint64
 	otherSk     [32]byte // another share of the same split
 	otherPk     backend.Pubkey
-	otherIndex  uint8
+	otherIndex  uint64
 }
 
 func newDVShare(t *testing.T) *dvShare {
@@ -50,9 +51,28 @@ func newDVShare(t *testing.T) *dvShare {
 	return d
 }
 
+// newDVShareAt is a 3-of-4 split at the x coordinates ids, as an SSV
+// cluster puts each share at its operator's ID; the runner holds the share
+// at id, the other share is the next one.
+func newDVShareAt(t *testing.T, ids []uint64, id uint64) *dvShare {
+	t.Helper()
+	gsk, gpk := newKey(t)
+	shares, commitments, err := software.SplitAt(gsk, 3, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.Index(ids, id)
+	o := (i + 1) % len(ids)
+	d := &dvShare{groupSk: gsk, group: gpk, commitments: commitments, index: id, sk: shares[i].Secret,
+		otherSk: shares[o].Secret, otherIndex: ids[o]}
+	d.pk, _ = core.PubkeyOf(d.sk)
+	d.otherPk, _ = core.PubkeyOf(d.otherSk)
+	return d
+}
+
 // request is the IMPORT_SHARE_SEALED request of share (sk, index) of d,
 // under an order the approvers signed for the group key.
-func (e *tgtEnv) dvRequest(d *dvShare, sk [32]byte, index uint8) backend.SealedImportRequest {
+func (e *tgtEnv) dvRequest(d *dvShare, sk [32]byte, index uint64) backend.SealedImportRequest {
 	e.t.Helper()
 	sp, _ := core.PubkeyOf(sk)
 	order := e.importOrder([]byte{1, 2}, d.group, func(b *importorder.Body) {
@@ -286,5 +306,32 @@ func TestDVShareWrongIndexRefused(t *testing.T) {
 	_, err = e.srv.dispatch(ctx, wire.Frame{Type: wireadmin.TypeImportSealed, Payload: p})
 	if backend.StatusOf(err) != backend.StatusBadKey || hasKey(e.srv.Signer.Keys(), d.otherPk) {
 		t.Fatalf("share of another index: %v, want BAD_KEY", err)
+	}
+}
+
+// An SSV share sits at its operator's ID, here 1043 of operators 1041 to
+// 1044: a dv_share runner takes it, keeps it across a restart and signs a
+// contribution with the group's selection proof.
+func TestDVShareOperatorID(t *testing.T) {
+	e := newDVEnv(t)
+	d := newDVShareAt(t, []uint64{1041, 1042, 1043, 1044}, 1043)
+	if err := e.importDV(d); err != nil {
+		t.Fatalf("import at operator ID 1043: %v", err)
+	}
+	if err := e.signMsg(d.pk, e.groupContribution(d.groupSk, d.group)); err != nil {
+		t.Fatalf("contribution with the group's proof: %v", err)
+	}
+	e.restart()
+	if !hasKey(e.srv.Signer.Keys(), d.pk) {
+		t.Fatal("the share did not load after a restart")
+	}
+}
+
+// A threshold runner's shares are 1 to n: an index above n is refused.
+func TestThresholdRefusesIndexAboveN(t *testing.T) {
+	e := newShareTgtEnv(t, "dev", nil)
+	err := e.importDV(newDVShareAt(t, []uint64{1, 2, 3, 5}, 5))
+	if backend.StatusOf(err) != backend.StatusBadKey || !strings.Contains(err.Error(), "above n only under signing_mode = dv_share") {
+		t.Fatalf("index 5 of 4 on a threshold runner: %v", err)
 	}
 }

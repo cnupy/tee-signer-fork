@@ -106,10 +106,12 @@ func cmdProbe(args []string, out io.Writer) error {
 // each validator has its t public commitments (Feldman), commitment 0
 // first, which is the validator key. It holds no secret.
 type splitFile struct {
-	T          uint8            `json:"t"`
-	N          uint8            `json:"n"`
-	Shares     map[string]uint8 `json:"shares"`
-	Validators []splitValidator `json:"validators"`
+	T uint8 `json:"t"`
+	N uint8 `json:"n"`
+	// Shares is each signer's share index: 1 to n, or under dv_share an
+	// SSV operator ID, which may be larger.
+	Shares     map[string]uint64 `json:"shares"`
+	Validators []splitValidator  `json:"validators"`
 }
 
 // splitValidator is one validator of a split file.
@@ -126,7 +128,7 @@ func readSplit(path string) (*splitFile, error) {
 	if s.T == 0 || s.N < s.T || len(s.Validators) == 0 {
 		return nil, fmt.Errorf("%s: want t, n with 1 <= t <= n and at least one validator", path)
 	}
-	if err := setupwire.CheckShareIndices(int(s.N), s.Shares); err != nil {
+	if err := setupwire.CheckDVShareIndices(s.Shares); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	for i, v := range s.Validators {
@@ -260,8 +262,8 @@ func cmdImportDraft(args []string, out io.Writer) error {
 	}
 	m := c.members[0]
 	idx, ok := split.Shares[m.name]
-	if !ok || idx == 0 || idx > split.N {
-		return fmt.Errorf("%s: no share index 1 to %d for %s", *splitPath, split.N, m.name)
+	if !ok || idx == 0 {
+		return fmt.Errorf("%s: no share index for %s", *splitPath, m.name)
 	}
 	// The target's own rule, so an order its runner refuses is not drafted
 	// (CheckThresholdOn: the split must fit the setup's signing_mode, 1 of 1
@@ -277,6 +279,13 @@ func cmdImportDraft(args []string, out io.Writer) error {
 			return fmt.Errorf("%s: a 1 of 1 order to a GCP signer: %s; -allow-gcp-unsafe-single-key confirms it", m.name, setupwire.UnsafeSingleKeyWarning)
 		}
 		fprintf(out, "WARNING %s: 1 of 1 on GCP: %s\n", m.name, setupwire.UnsafeSingleKeyWarning)
+	}
+	// Indices above n are SSV operator IDs, for dv_share signers only;
+	// every other split numbers its shares 1 to n.
+	if m.setup.SigningMode != setupwire.SigningModeDVShare {
+		if err := setupwire.CheckShareIndices(int(split.N), split.Shares); err != nil {
+			return fmt.Errorf("%s: %w (signing_mode %s: share indices 1 to n; above n only for a dv_share signer)", *splitPath, err, m.setup.SigningMode)
+		}
 	}
 	b := &importorder.Body{ClusterID: m.setup.ClusterID, ChainHash: m.setup.Chain.Hash(), Target: m.setupHash,
 		T: split.T, N: split.N, ShareIndex: idx}
@@ -507,7 +516,7 @@ func checkShareIndex(sharesPath string, shares []share, split *splitFile, o *imp
 		if err != nil {
 			continue // reported in the import loop
 		}
-		want, err := threshold.FeldmanEval(comm, uint64(o.Body.ShareIndex))
+		want, err := threshold.FeldmanEval(comm, o.Body.ShareIndex)
 		if err != nil {
 			return fmt.Errorf("commitments of %s: %w", s.pubkey, err)
 		}

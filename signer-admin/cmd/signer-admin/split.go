@@ -94,7 +94,7 @@ func cmdSplit(args []string, out io.Writer) error {
 	if *n > 8 {
 		return fmt.Errorf("-n %d: at most 8 shares", *n)
 	}
-	idx := map[string]uint8{}
+	idx := map[string]uint64{}
 	for i, name := range names {
 		if !splitNameOK(name) {
 			return fmt.Errorf("-signers: name %q: want letters, digits, '.', '_' or '-', not starting with '.'", name)
@@ -102,7 +102,7 @@ func cmdSplit(args []string, out io.Writer) error {
 		if _, ok := idx[name]; ok {
 			return fmt.Errorf("-signers: %s twice", name)
 		}
-		idx[name] = uint8(i + 1)
+		idx[name] = uint64(i + 1)
 	}
 	c, err := runnerchain.Parse(*chain)
 	if err != nil {
@@ -192,7 +192,7 @@ func cmdSplit(args []string, out io.Writer) error {
 // writeSplit splits each key and writes the three outputs into the new
 // folder dir, then reads split.json and each shares.txt back with the
 // readers of import-draft and import.
-func writeSplit(dir string, names []string, idx map[string]uint8, t, n int, want []cloud.Pubkey, byPub map[cloud.Pubkey]*dealtKey, out io.Writer) error {
+func writeSplit(dir string, names []string, idx map[string]uint64, t, n int, want []cloud.Pubkey, byPub map[cloud.Pubkey]*dealtKey, out io.Writer) error {
 	if err := os.Mkdir(filepath.Join(dir, "shares"), 0o700); err != nil {
 		return err
 	}
@@ -208,7 +208,7 @@ func writeSplit(dir string, names []string, idx map[string]uint8, t, n int, want
 	manifest := struct {
 		T          int                 `json:"t"`
 		N          int                 `json:"n"`
-		ShareIndex map[string]uint8    `json:"share_index"`
+		ShareIndex map[string]uint64   `json:"share_index"`
 		Validators []manifestValidator `json:"validators"`
 		SplitSHA   string              `json:"split_sha256"`
 	}{T: t, N: n, ShareIndex: idx}

@@ -93,9 +93,32 @@ func Split(secret [32]byte, t, n int) ([]Share, error) {
 // buffers this function clears; see scalar for what it cannot clear. It
 // clears its own copy of secret; the caller clears the one it passed.
 func SplitWithCommitments(secret [32]byte, t, n int) ([]Share, []backend.Pubkey, error) {
+	if t < 1 || n < t {
+		clear(secret[:])
+		return nil, nil, errors.New("core: need 1 <= t <= n")
+	}
+	ids := make([]uint64, n)
+	for i := range ids {
+		ids[i] = uint64(i + 1)
+	}
+	return SplitAt(secret, t, ids)
+}
+
+// SplitAt is SplitWithCommitments with the shares at the x coordinates ids
+// instead of 1 to n: an SSV split puts each share at its operator's ID.
+// The ids must be distinct and above 0.
+func SplitAt(secret [32]byte, t int, ids []uint64) ([]Share, []backend.Pubkey, error) {
 	defer clear(secret[:])
+	n := len(ids)
 	if t < 1 || n < t {
 		return nil, nil, errors.New("core: need 1 <= t <= n")
+	}
+	seen := map[uint64]bool{}
+	for _, id := range ids {
+		if id == 0 || seen[id] {
+			return nil, nil, errors.New("core: share ids must be distinct and above 0")
+		}
+		seen[id] = true
 	}
 	coef := make([]scalar, t)
 	defer func() {
@@ -127,7 +150,7 @@ func SplitWithCommitments(secret [32]byte, t, n int) ([]Share, []backend.Pubkey,
 	defer wipe(&y)
 	for i := range shares {
 		clear(b[:])
-		binary.BigEndian.PutUint64(b[24:], uint64(i+1))
+		binary.BigEndian.PutUint64(b[24:], ids[i])
 		scalarFromBytes(&x, &b)
 		// Horner from the top coefficient: y = y*x + coef[j], mod r.
 		y = coef[t-1]
@@ -136,7 +159,7 @@ func SplitWithCommitments(secret [32]byte, t, n int) ([]Share, []backend.Pubkey,
 				return nil, nil, errors.New("core: degenerate split")
 			}
 		}
-		shares[i].ID = uint64(i + 1)
+		shares[i].ID = ids[i]
 		scalarToBytes(&shares[i].Secret, &y)
 	}
 	return shares, commitments, nil

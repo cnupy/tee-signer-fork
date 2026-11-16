@@ -149,7 +149,7 @@ func TestSplitKeystores(t *testing.T) {
 		t.Fatalf("split.json: %d of %d, %d validators", sf.T, sf.N, len(sf.Validators))
 	}
 	for i, name := range names {
-		if sf.Shares[name] != uint8(i+1) {
+		if sf.Shares[name] != uint64(i+1) {
 			t.Fatalf("split.json: %s has share index %d", name, sf.Shares[name])
 		}
 	}

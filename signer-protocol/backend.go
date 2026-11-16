@@ -645,11 +645,12 @@ type SealedImportRequest struct {
 	// Pubkey. A runner with a setup refuses a sealed import without one.
 	Order []byte
 	// The split the share comes from, as the order names it: threshold T
-	// of N, this share's index (x coordinate), and the T public commitments
-	// of the polynomial, Commitments[0] being Pubkey. With an order they
-	// are required.
-	T, N, ShareIndex uint8
-	Commitments      []Pubkey
+	// of N, this share's index (x coordinate: 1 to N, or an SSV operator
+	// ID), and the T public commitments of the polynomial, Commitments[0]
+	// being Pubkey. With an order they are required.
+	T, N        uint8
+	ShareIndex  uint64
+	Commitments []Pubkey
 }
 
 // Watermark is an EIP-3076 minimal-strategy summary for one validator:

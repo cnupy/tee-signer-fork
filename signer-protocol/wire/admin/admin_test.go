@@ -230,7 +230,7 @@ func TestImportBatch(t *testing.T) {
 	if _, err := EncodeImportBatch(nil, reqs); err == nil {
 		t.Fatal("a split without an order encoded")
 	}
-	bad := map[string][]byte{"version 2": append([]byte{2}, p[1:]...), "trailing": append(append([]byte(nil), p...), 0), "cut": p[:len(p)-1]}
+	bad := map[string][]byte{"version 1": append([]byte{1}, p[1:]...), "trailing": append(append([]byte(nil), p...), 0), "cut": p[:len(p)-1]}
 	for name, b := range bad {
 		if _, err := DecodeImportBatch(b); err == nil {
 			t.Errorf("%s: decoded", name)
@@ -260,4 +260,49 @@ func FuzzDecodeImportBatch(f *testing.F) {
 			t.Fatalf("IMPORT_SHARES_SEALED value round trip: %+v %v", reqs2, err)
 		}
 	})
+}
+
+// The share index is a u64 in both imports: an SSV share's index is its
+// operator ID, often above 255.
+func TestImportShareIndexU64(t *testing.T) {
+	order := []byte("order")
+	share := func(idx uint64) backend.SealedImportRequest {
+		return backend.SealedImportRequest{Pubkey: backend.Pubkey{0xa1}, SharePubkey: backend.Pubkey{0xb1}, Index: 7,
+			Sealed: []byte{1, 2, 3}, T: 3, N: 4, ShareIndex: idx,
+			Commitments: []backend.Pubkey{{0xa1}, {0xc1}, {0xc2}}}
+	}
+	for _, idx := range []uint64{2, 255, 1043, 1 << 40} {
+		reqs := []backend.SealedImportRequest{share(idx), share(idx)}
+		p, err := EncodeImportBatch(order, reqs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if size := BatchLen(order) + BatchShareLen(&reqs[0]) + BatchShareLen(&reqs[1]); len(p) != size {
+			t.Fatalf("index %d: %d bytes, BatchLen and BatchShareLen give %d", idx, len(p), size)
+		}
+		got, err := DecodeImportBatch(p)
+		if err != nil || len(got) != 2 {
+			t.Fatalf("index %d: %v", idx, err)
+		}
+		for i := range got {
+			if got[i].ShareIndex != idx || got[i].T != 3 || got[i].N != 4 || len(got[i].Commitments) != 3 ||
+				got[i].Commitments[2] != (backend.Pubkey{0xc2}) || string(got[i].Order) != "order" || got[i].Index != 7 {
+				t.Fatalf("index %d: share %d decoded as %+v", idx, i, got[i])
+			}
+		}
+		for n := 1; n < len(p); n += 7 {
+			if _, err := DecodeImportBatch(p[:n]); err == nil {
+				t.Fatalf("index %d: %d of %d bytes decoded", idx, n, len(p))
+			}
+		}
+		r := share(idx)
+		r.Order = order
+		sp, err := EncodeImportSealed(&r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := DecodeImportSealed(sp); err != nil || got.ShareIndex != idx || len(got.Commitments) != 3 {
+			t.Fatalf("IMPORT_SHARE_SEALED index %d: %v", idx, err)
+		}
+	}
 }

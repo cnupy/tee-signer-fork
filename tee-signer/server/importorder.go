@@ -93,6 +93,11 @@ func (s *Server) checkSplit(req *backend.SealedImportRequest, b *importorder.Bod
 	case req.T != b.T || req.N != b.N || req.ShareIndex != b.ShareIndex:
 		return backend.Refused(backend.StatusBadKey, "split %d of %d, share index %d; the import order names %d of %d, index %d",
 			req.T, req.N, req.ShareIndex, b.T, b.N, b.ShareIndex)
+	case req.ShareIndex > uint64(req.N) && !s.dvShare():
+		// A split made here or by Charon numbers its shares 1 to n; only an
+		// SSV share's index, its operator ID, may be larger.
+		return backend.Refused(backend.StatusBadKey, "share index %d of a %d-of-%d split: above n only under signing_mode = dv_share (SSV operator IDs)",
+			req.ShareIndex, req.T, req.N)
 	case 2*int(req.T) <= int(req.N):
 		return backend.Refused(backend.StatusBadKey, "threshold %d of %d: two disjoint groups of signers could both sign", req.T, req.N)
 	case thresholdErr != nil:
@@ -106,7 +111,7 @@ func (s *Server) checkSplit(req *backend.SealedImportRequest, b *importorder.Bod
 	case slices.Contains(req.Commitments, infinity):
 		return backend.Refused(backend.StatusBadKey, "a commitment of validator %s is the point at infinity: the split is degenerate", req.Pubkey.String()[:18])
 	}
-	want, err := threshold.FeldmanEval(req.Commitments, uint64(req.ShareIndex))
+	want, err := threshold.FeldmanEval(req.Commitments, req.ShareIndex)
 	if err != nil {
 		return backend.Refused(backend.StatusBadKey, "commitments: %v", err)
 	}

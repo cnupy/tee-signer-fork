@@ -34,7 +34,7 @@ func configApprover(id byte) ed25519.PrivateKey {
 // importOrder is an import order to the runner of setup s (hash), for
 // pk from a t-of-n split whose commitments are commitments, share index
 // idx, signed by approvers 1 and 2 (configApprover).
-func importOrder(t *testing.T, s *setupwire.Setup, hash [32]byte, pk backend.Pubkey, tt, n, idx uint8, commitments []backend.Pubkey) []byte {
+func importOrder(t *testing.T, s *setupwire.Setup, hash [32]byte, pk backend.Pubkey, tt, n uint8, idx uint64, commitments []backend.Pubkey) []byte {
 	t.Helper()
 	b := importorder.Body{ClusterID: s.ClusterID, ChainHash: s.Chain.Hash(), Target: hash, NotAfter: uint64(time.Now().Unix()) + 3600,
 		T: tt, N: n, ShareIndex: idx, Validators: []importorder.Entry{{Pubkey: pk, CommitmentsHash: importorder.CommitmentsHash(commitments)}}}
