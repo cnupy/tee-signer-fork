@@ -271,7 +271,7 @@ To turn it off, set `coalesce.enabled: false` and restart the gateway. `cache_sl
 ## Policy
 
 - `VOLUNTARY_EXIT` is never signed.
-- `VALIDATOR_REGISTRATION` is signed only when `fee_recipient` is in `policy.fee_recipient_allowlist` and `pubkey` equals the key in the URL.
+- `VALIDATOR_REGISTRATION` is signed only when `fee_recipient` is in `policy.fee_recipient_allowlist` and `pubkey` equals the key in the URL. With `ssv_api` on, `pubkey` may also be another key: an SSV operator's share signs its validator's registration, and the dv_share signer signs it only when `pubkey` is that share's group key.
 
 Both are refused with 412 and a message naming the rule, before any signer is contacted. The signers apply their own policy on top.
 
@@ -310,6 +310,7 @@ Both are refused with 412 and a message naming the rule, before any signer is co
 | `signers.nodes[].allow_chain_build` | empty | accept a signer of the non-prod build of this chain: `hoodi`, `devnet` or `ci-test`. Empty: mainnet builds only |
 | `signers.nodes[].tls_key_pin` | none | sha256 of the signer's TLS key, 64 hex digits; the key changes at every start of the signer |
 | `policy.fee_recipient_allowlist` | empty | fee recipients a `VALIDATOR_REGISTRATION` may name |
+| `ssv_api` | false | also serve the ssv-signer API (`/v1/validators`, `/v1/validators/sign/{pubkey}`, `/v1/operator/identity`, `/v1/operator/sign`) for an SSV node in remote signing mode, from dv_share signers that hold the operator key ([signer-admin/README.md](../signer-admin/README.md), "SSV operators") |
 
 The `attestation` block takes the fields of `runnerclient.Attestation` under the same names; [attestation-verify/runnerclient/verify/verify.go](../attestation-verify/runnerclient/verify/verify.go) says what each one checks. The usual ones:
 

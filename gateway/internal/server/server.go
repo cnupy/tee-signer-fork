@@ -28,6 +28,8 @@ import (
 const (
 	contentTypeJSON = "application/json; charset=utf-8"
 	contentTypeText = "text/plain; charset=utf-8"
+	// contentTypeOctets is ssv-signer's operator signature answer.
+	contentTypeOctets = "application/octet-stream"
 )
 
 const maxBodyBytes = 10 << 20
@@ -46,6 +48,8 @@ type Server struct {
 	// shared is nil unless WithCoalescing turned it on.
 	shared *coalesce.Group[signed]
 	m      *metrics.Gateway
+	// ssv is nil unless WithSSV turned the ssv-signer API on.
+	ssv Operator
 }
 
 // signed is the outcome of one call to the signers: the signature, which
@@ -107,6 +111,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /upcheck", s.upcheck)
 	mux.HandleFunc("GET /api/v1/eth2/publicKeys", s.publicKeys)
 	mux.HandleFunc("POST /api/v1/eth2/sign/{identifier}", s.sign)
+	if s.ssv != nil {
+		s.ssvRoutes(mux)
+	}
 
 	return mux
 }
@@ -130,13 +137,8 @@ func (s *Server) sign(w http.ResponseWriter, r *http.Request) {
 	identifier := r.PathValue("identifier")
 	log := s.log.With("identifier", identifier)
 
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
-	if err != nil {
-		if errors.As(err, new(*http.MaxBytesError)) {
-			writeError(w, http.StatusRequestEntityTooLarge, "Request Entity Too Large")
-		} else {
-			writeError(w, http.StatusBadRequest, "Bad Request")
-		}
+	body, ok := readBody(w, r)
+	if !ok {
 		return
 	}
 
@@ -301,6 +303,23 @@ func acceptsJSON(r *http.Request) bool {
 	}
 
 	return false
+}
+
+// readBody reads a request body of at most maxBodyBytes, or answers the
+// error and returns false.
+func readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	if err != nil {
+		if errors.As(err, new(*http.MaxBytesError)) {
+			writeError(w, http.StatusRequestEntityTooLarge, "Request Entity Too Large")
+		} else {
+			writeError(w, http.StatusBadRequest, "Bad Request")
+		}
+
+		return nil, false
+	}
+
+	return body, true
 }
 
 // parsePubkey accepts the identifier with or without 0x, in any case, like

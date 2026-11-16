@@ -73,6 +73,10 @@ func run(cfgPath string, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	if cfg.SSVAPI {
+		// An SSV operator's share signs its validator's registration.
+		pol.PassGroupKeyRegistrations()
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -113,6 +117,8 @@ func run(cfgPath string, log *slog.Logger) error {
 	bcfg := backend.Config{
 		Connections: cfg.Signers.Connections, Timeout: cfg.Signers.Timeout, DialTimeout: cfg.Signers.DialTimeout,
 		MaxShareIndex: cfg.Signers.MaxShareIndex, Certs: certs, Metrics: m,
+		// An SSV operator's signer holds no key before its first validator.
+		AllowNoKeys: cfg.SSVAPI,
 	}
 	for i, n := range cfg.Signers.Nodes {
 		bcfg.Signers = append(bcfg.Signers, backend.SignerConfig{Name: n.Name, Connection: cfg.Connection(i)})
@@ -156,6 +162,10 @@ func run(cfgPath string, log *slog.Logger) error {
 	handler := server.New(signers, pol, chain, log, cfg.Signers.Timeout).WithMetrics(m)
 	if *cfg.Coalesce.Enabled {
 		handler = handler.WithCoalescing(cfg.CoalesceKeep())
+	}
+	if cfg.SSVAPI {
+		handler = handler.WithSSV(signers)
+		log.Info("ssv_api", "enabled", true, "paths", "/v1/validators, /v1/operator")
 	}
 	log.Info("coalesce", "enabled", *cfg.Coalesce.Enabled, "cache_slots", *cfg.Coalesce.CacheSlots,
 		"seconds_per_slot", cfg.Chain.SecondsPerSlot)
