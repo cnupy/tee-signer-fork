@@ -4,6 +4,7 @@ package server
 
 import (
 	"context"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -167,6 +168,10 @@ type Server struct {
 	// orders share writes.
 	shareSetMu sync.Mutex
 	shareHash  map[backend.Pubkey][32]byte
+	// operatorKey is the SSV operator key of a dv_share runner once
+	// imported or loaded (operator.go); operatorMu guards it.
+	operatorMu  sync.Mutex
+	operatorKey *rsa.PrivateKey
 	// shareWritesStopped: a share write failed and so did the log record
 	// that drops its set. Share writes stop until a restart.
 	shareWritesStopped bool
@@ -944,6 +949,12 @@ func (s *Server) dispatch(ctx context.Context, f wire.Frame) ([]byte, error) {
 		return wire.AppendKey(nil, k), nil
 	case wireadmin.TypeImportBatch:
 		return s.importBatch(f.Payload)
+	case wireadmin.TypeImportOperatorKey:
+		return s.importOperatorKey(f.Payload)
+	case wire.TypeOperatorIdentity:
+		return s.operatorIdentity()
+	case wire.TypeOperatorSign:
+		return s.operatorSign(f.Payload)
 	case wireadmin.TypeConfigUpdate:
 		return s.configUpdate(ctx, f.Payload)
 	}

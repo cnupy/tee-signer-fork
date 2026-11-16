@@ -192,12 +192,14 @@ const (
 // adminTypes are the message types only the admin role may send.
 var adminTypes = []wire.MsgType{
 	wireadmin.TypeImportShare, wireadmin.TypeImportSealed, wireadmin.TypeConfigUpdate, wireadmin.TypeImportBatch,
+	wireadmin.TypeImportOperatorKey,
 }
 
 // allows is the role table. A role or a type missing here is denied.
 var allows = func() map[attls.Role]map[wire.MsgType]grant {
 	admin := map[wire.MsgType]grant{
 		wire.TypeHealth: allow, wire.TypePublicKeys: allow, wire.TypeAttest: allow, wire.TypeIdentity: allow,
+		wire.TypeOperatorIdentity: allow,
 	}
 	for _, t := range adminTypes {
 		admin[t] = allow
@@ -205,7 +207,10 @@ var allows = func() map[attls.Role]map[wire.MsgType]grant {
 	t := map[attls.Role]map[wire.MsgType]grant{
 		// The signing client: keys, signatures, health and its identity on each
 		// new connection. It never sends ATTEST.
-		attls.RoleSigning: {wire.TypeHealth: allow, wire.TypePublicKeys: allow, wire.TypeSign: allow, wire.TypeIdentity: limited},
+		// OPERATOR_IDENTITY and OPERATOR_SIGN: the SSV node's operator
+		// key (operator.go).
+		attls.RoleSigning: {wire.TypeHealth: allow, wire.TypePublicKeys: allow, wire.TypeSign: allow, wire.TypeIdentity: limited,
+			wire.TypeOperatorIdentity: allow, wire.TypeOperatorSign: allow},
 		// PUBLIC_KEYS is in: a verifier of an ATTEST answer needs the keys
 		// to recompute keys_hash.
 		attls.RoleAttestOnly: {wire.TypeHealth: allow, wire.TypePublicKeys: allow, wire.TypeAttest: limited, wire.TypeIdentity: limited},

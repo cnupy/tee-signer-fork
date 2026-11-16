@@ -188,3 +188,23 @@ func (c *Client) ImportSealed(ctx context.Context, req *backend.SealedImportRequ
 	}
 	return wire.DecodeKey(b)
 }
+
+// ImportOperatorKey seals the SSV operator's RSA private key (PKCS #1
+// DER) to the runner's attested import key (one IDENTITY, checked by
+// verify) and sends it (IMPORT_OPERATOR_KEY_SEALED). It returns the
+// public key the runner now holds (PKIX DER). key is not modified.
+func (c *Client) ImportOperatorKey(ctx context.Context, key []byte, verify remote.VerifyFunc) ([]byte, error) {
+	id, err := c.verifiedIdentity(ctx, verify)
+	if err != nil {
+		return nil, err
+	}
+	sealed, err := sealedimport.SealBytes(id, wireadmin.OperatorKeyAAD, key)
+	if err != nil {
+		return nil, err
+	}
+	p, err := wireadmin.EncodeImportOperatorKey(sealed)
+	if err != nil {
+		return nil, err
+	}
+	return c.RoundTrip(ctx, wireadmin.TypeImportOperatorKey, p)
+}

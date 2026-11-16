@@ -1,6 +1,6 @@
 // Package statestore keeps a durable copy of the runner's local state in an
-// object store outside the host: the wrapped sealing key and the sealed
-// shares (Prefixes). On Azure ACI and in a
+// object store outside the host: the wrapped sealing key, the sealed
+// shares and the sealed SSV operator key (Prefixes). On Azure ACI and in a
 // Confidential Space VM that local state lives on the container's or the
 // VM's own disk and is gone after a restart, and a sealed share has no
 // other copy.
@@ -65,7 +65,7 @@ import (
 // marks, not used with the mark log)
 // and mark-hint/ (written on every mark record; without it the claim
 // compares nothing, as on any restart with lost state).
-var Prefixes = []string{"sealing/", "shares/"}
+var Prefixes = []string{"sealing/", "shares/", "operator/"}
 
 // Durable reports whether key belongs in the copy.
 func Durable(key string) bool {

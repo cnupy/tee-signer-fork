@@ -40,6 +40,12 @@ const (
 	TypeSign       MsgType = 0x03
 	TypeAttest     MsgType = 0x04
 	TypeIdentity   MsgType = 0x06
+	// TypeOperatorIdentity answers the SSV operator's RSA public key
+	// (PKIX DER) a dv_share runner holds; TypeOperatorSign signs a
+	// SHA-256 digest with it (RSA PKCS #1 v1.5), as ssv-signer's
+	// /v1/operator/sign does over the digest of its payload.
+	TypeOperatorIdentity MsgType = 0x0b
+	TypeOperatorSign     MsgType = 0x0c
 )
 
 // typeNames names every message type of the protocol, those of wire/admin
@@ -47,7 +53,8 @@ const (
 var typeNames = map[MsgType]string{
 	0x01: "HEALTH", 0x02: "PUBLIC_KEYS", 0x03: "SIGN", 0x04: "ATTEST", 0x05: "IMPORT_SHARE",
 	0x06: "IDENTITY", 0x07: "IMPORT_SHARE_SEALED", 0x08: "CONFIG_UPDATE",
-	0x0a: "IMPORT_SHARES_SEALED",
+	0x0a: "IMPORT_SHARES_SEALED", 0x0b: "OPERATOR_IDENTITY", 0x0c: "OPERATOR_SIGN",
+	0x0d: "IMPORT_OPERATOR_KEY_SEALED",
 }
 
 func (t MsgType) String() string {

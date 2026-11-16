@@ -38,6 +38,11 @@ var (
 	CtxMarkKey  = Context{"signer-mark-key-v1"}
 	CtxMarkHint = Context{"signer-mark-hint-v1"}
 	CtxShare    = Context{"signer-share-v1"}
+	// The SSV operator key of a dv_share runner: the AAD of its stored
+	// record, and of its import sealed to the import key (package
+	// wire/admin holds the import's name itself).
+	CtxOperatorKey       = Context{"signer-operator-key-v1"}
+	CtxOperatorKeyImport = Context{"signer-operator-key-import-v1"}
 	// Azure HKDF info strings.
 	CtxAzureSealing = Context{"signer-runner azure sealing v1"}
 	CtxAzureKeyWrap = Context{"signer-runner azure key wrap v1"}
@@ -181,7 +186,7 @@ var Contexts = []Context{
 	CtxHandoverShare, CtxHandoverOrigin, CtxHandoverOriginKey,
 	CtxImportOrder, CtxImportCommitments,
 	CtxConfigUpdateHash, CtxHandoverOrderHash, CtxImportOrderHash,
-	CtxHandoverCarry,
+	CtxHandoverCarry, CtxOperatorKey, CtxOperatorKeyImport,
 }
 
 func (c Context) String() string { return c.name }

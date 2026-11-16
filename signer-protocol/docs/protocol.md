@@ -114,9 +114,9 @@ that; a client that needs to tell causes apart reads `detail`.
 | 1 | `SC_ERR_ARG` | the core refused an argument; also a config update whose values the core refuses (policy, slot times) | no |
 | 2 | `SC_ERR_NOMEM` | the core is out of memory | maybe |
 | 3 | `SC_ERR_DECODE` | the core could not decode the message | no |
-| 4 | `SC_ERR_BAD_KEY` | a share or key does not check out: a sealed share for another runner or boot, a header changed in transit, a share that does not match `share_pubkey` | no; a sealed import needs a fresh IDENTITY and a new seal |
-| 5 | `SC_ERR_DUPLICATE` | the validator is loaded already | no |
-| 6 | `SC_ERR_UNKNOWN_VALIDATOR` | no share of this validator is loaded | no |
+| 4 | `SC_ERR_BAD_KEY` | a share or key does not check out: a sealed share for another runner or boot, a header changed in transit, a share that does not match `share_pubkey`; an SSV operator key that does not parse or is not 2048 to 4096 bits | no; a sealed import needs a fresh IDENTITY and a new seal |
+| 5 | `SC_ERR_DUPLICATE` | the validator is loaded already; the runner holds an SSV operator key already | no |
+| 6 | `SC_ERR_UNKNOWN_VALIDATOR` | no share of this validator is loaded; no SSV operator key is imported | no |
 | 7 | `SC_ERR_STORAGE` | overloaded: an import whose maxima did not reach the core (until a restart); the mark log has no `log_id` yet; the body of a config update in force is unreadable (until that update is sent again); a mark log or share write failed | maybe |
 | 8 | `SC_ERR_CLOCK` | no trusted time (the NTS clock lacks a quorum, or the clock is not trusted for a config update) | later |
 | 9 to 12 | `SC_ERR_SLASH_BLOCK`, `_SOURCE`, `_TARGET`, `_SOURCE_GT_TARGET` | slashing protection refused | no |
@@ -131,7 +131,7 @@ that; a client that needs to tell causes apart reads `detail`.
 | 27 | `SC_ERR_POLICY_BUILDER_AUTH` | kind 14: the root of the BuilderRequestAuth data is not on `builder_request_auth_roots` (an empty list refuses all) | no (until a locked config update) |
 | 28 | `SC_ERR_POLICY_TARGET_SLOT` | kind 1: the attestation's target epoch is not the epoch of its slot; no chain includes such data. A data check: a vote for a slot that has not started gets `SC_ERR_POLICY_FUTURE` | no |
 | 1000 | `BAD_REQUEST` | the payload does not parse, or the kind of a typed SIGN is unknown; also a well-formed CONFIG_UPDATE the runner refuses (reason in `detail`) | no |
-| 1001 | `UNSUPPORTED` | a message type this runner does not serve (unknown, another build, a flag that turns it off, a runner without a setup); an ATTEST or IDENTITY request of another version; an unknown root message type | no |
+| 1001 | `UNSUPPORTED` | a message type this runner does not serve (unknown, another build, a flag that turns it off, a runner without a setup, the SSV operator key messages off `signing_mode = dv_share`); an ATTEST or IDENTITY request of another version; an unknown root message type | no |
 | 1002 | `INTERNAL` | anything else | maybe |
 | 1003 | `DOMAIN_MISMATCH` | the request's domain (a typed kind's, or a root message's) differs from the one the runner computes | no |
 | 1004 | `NOT_READY` | the runner is not serving yet (CONFIG_UPDATE before its core exists), or the image check refuses (`detail` starts with `image check:`, see "Image check") | later |
@@ -248,13 +248,16 @@ mainnet build has the same `version`.
 | 0x07 | IMPORT_SHARE_SEALED | see below | key |
 | 0x08 | CONFIG_UPDATE | the signed update, see below (a runner with a setup) | `version:u8 outcome:u8 setup_state` |
 | 0x0a | IMPORT_SHARES_SEALED | see below | `count:u32` then `count` x key |
+| 0x0b | OPERATOR_IDENTITY | empty | the SSV operator public key, PKIX DER |
+| 0x0c | OPERATOR_SIGN | `digest[32]`, a SHA-256 | RSA PKCS #1 v1.5 signature over the digest |
+| 0x0d | IMPORT_OPERATOR_KEY_SEALED | `version:u8(1) sealed`, see below | the SSV operator public key, PKIX DER |
 
 A `mark` is `has_block:u8 block_slot:u64 has_attestation:u8 source_epoch:u64
 target_epoch:u64`. PUBLIC_KEYS has no paging: one frame holds at most
 10,082 keys (see "Open items").
 
-Type numbers: 0x01 to 0x08 and 0x0a are taken, the next free one is 0x0b. 0x09
-belonged to the removed exit approvals, 0x20 to 0x28 to the removed key
+Type numbers: 0x01 to 0x08 and 0x0a to 0x0d are taken, the next free one
+is 0x0e. 0x09 belonged to the removed exit approvals, 0x20 to 0x28 to the removed key
 generation and 0x31 to 0x33 to the removed handover; none of them is
 reused (TestRoleTable keeps them
 refused). A response type is the request type with 0x80 set, so request
@@ -263,7 +266,7 @@ types stay below 0x80.
 `key = pubkey[48] share_pubkey[48] index:u64`. `pubkey` is the validator's
 on-chain key; `share_pubkey` the key of the share this runner holds;
 `index` is `2^64-1` when unbound. A runner with `signing_mode = dv_share`
-lists each Charon share with `pubkey` = `share_pubkey`, the key its
+lists each Charon or SSV share with `pubkey` = `share_pubkey`, the key its
 clients sign under ("Key rule lock"). There `pubkey` is not the on-chain
 key, and the protocol level stays 2: a gateway with the whole-key check
 reads an unknown `signing_mode` and refuses those keys, but a client that
@@ -608,8 +611,8 @@ TestTwoSingleModeSignersRefused, TestImportDraftRepeatedShareIndex
 (signer-admin).
 
 `signing_mode = dv_share` (value 3) is for a runner that holds one share
-of each distributed validator of an Obol Charon cluster, whose other
-shares sit in other operators' signers. A runner built before it refuses
+of each distributed validator of an Obol Charon cluster or an SSV
+cluster, whose other shares sit in other operators' signers. A runner built before it refuses
 such a setup as an unknown `signing_mode`. Its import orders and sealed
 imports are those of threshold mode: `pubkey` is the validator (group)
 key, the order names the cluster's t-of-n split (`setupwire.CheckThresholdOn`
@@ -634,14 +637,16 @@ which Charon combined, against it. The partial selection proofs
 share. A dv_share key without a group key, or a key with one under another
 mode, is refused at import and at restart. The group key never comes from
 a signing request: it is fixed at import by the approvers' order (its
-commitments hash) and the admin's cluster lock (`signer-admin dv-split`).
+commitments hash) and the admin's cluster lock (`signer-admin dv-split`)
+or SSV keyshares file (`signer-admin ssv-split`).
 The check only stops aggregates and contributions with a selection proof
 the group did not make; none of them is slashable. A builder registration
-of a dv_share key may name the share key or the group key (a Charon client
-registers the group key). Tests: TestDVShareImportAndSign,
+of a dv_share key may name the share key or the group key (a Charon or SSV
+client registers the group key). Tests: TestDVShareImportAndSign,
 TestDVShareRegistrationPubkey,
 TestSingleModeRefusesGroupSelectionProof, TestDVShareBatch,
-TestDVShareNeedsGroupKey, TestDVShareWrongIndexRefused (tee-signer/server),
+TestDVShareNeedsGroupKey, TestDVShareWrongIndexRefused,
+TestDVShareOperatorID (tee-signer/server),
 TestSigningModeDVShare (setupwire), TestDVShareSelectionProof
 (signer-core/core), test_dv_share (signer-core test_unit).
 
@@ -840,7 +845,7 @@ cloud platform.
 pubkey[48] share_pubkey[48] index:u64 flags:u8 block_slot:u64 source_epoch:u64 target_epoch:u64
 sealed_len:u16 sealed            sealed = enc_len:u16 enc ciphertext
 [order_len:u32 order             a signed import order (governance/importorder)
- [t:u8 n:u8 share_index:u8 commitments[48*t]]]   the split the share comes from
+ [t:u8 n:u8 share_index:u64 commitments[48*t]]]  the split the share comes from
 ```
 
 A runner with a setup takes the share only under an import order: k
@@ -860,8 +865,11 @@ without an order. With the order the request carries the split: `t`,
 commitment 0 the validator key). The runner checks that they are the
 order's (the commitments by their hash), that `2t > n`, that commitment 0
 is `pubkey` and that `share_pubkey` is the commitments' value at the share
-index; otherwise
-`SC_ERR_BAD_KEY`. A share that is not a point of the validator's
+index; otherwise `SC_ERR_BAD_KEY`. The share index is 1 to `n`, except
+under `signing_mode = dv_share`, where an SSV share's index is its
+operator ID and may be larger (TestDVShareOperatorID,
+TestThresholdRefusesIndexAboveN, TestShareIndexU64,
+TestImportShareIndexU64). A share that is not a point of the validator's
 polynomial, or a share of a split without a majority threshold, is not
 stored. The order travels in the request; the runner keeps nothing of
 it. `governance/importorder/testdata/vector.txt` is a test vector
@@ -897,8 +905,8 @@ the settings of each signer's connection file (`cloud.json`).
 ### IMPORT_SHARES_SEALED
 
 ```
-version:u8 order_len:u32 order count:u16      version 1; order_len 0: no order
-count x (header sealed_len:u16 sealed t:u8 [n:u8 share_index:u8 commitments[48*t]])
+version:u8 order_len:u32 order count:u16      version 2; order_len 0: no order
+count x (header sealed_len:u16 sealed t:u8 [n:u8 share_index:u64 commitments[48*t]])
 ```
 
 Many sealed shares under one import order, at most 1,024 and one frame
@@ -923,6 +931,40 @@ A batch of no share writes nothing and answers no key: a sender learns
 that the runner knows the message. A runner older than the message
 refuses its type with `FORBIDDEN` (see "Client roles"), and
 `signer-admin import` then sends one IMPORT_SHARE_SEALED per share.
+
+### SSV operator key
+
+A runner with `signing_mode = dv_share` can serve an SSV node (the
+gateway's `ssv_api`). The SSV network encrypts each validator share to its
+operator's RSA key on chain, so whoever holds that key can decrypt every
+share the operator was given. The runner keeps it:
+
+- IMPORT_OPERATOR_KEY_SEALED loads it once: the PKCS #1 DER private key,
+  2048 to 4096 bits, sealed to the import key with HPKE as a share is
+  (package sealedimport, `SealBytes`), with the associated data
+  `signer-operator-key-import-v1`. The runner stores it sealed under the
+  platform's sealing key (AAD: context `signer-operator-key-v1`,
+  setup_hash and log_id) and answers its public key. While the stored
+  key opens, another is refused with `SC_ERR_DUPLICATE`; one that no
+  longer opens (on Nitro and GCP, a start with no share stored makes a
+  new sealing key) is replaced. The state copy holds the record with the
+  shares. `-sealed-import=false` turns this message off as it does the
+  share imports.
+- OPERATOR_IDENTITY answers the public key; `SC_ERR_UNKNOWN_VALIDATOR`
+  before an import.
+- OPERATOR_SIGN signs a 32-byte SHA-256 digest (RSA PKCS #1 v1.5), the
+  signature ssv-signer's `/v1/operator/sign` gives over the digest of its
+  payload. The padding fixes all of the RSA input but the digest, so the
+  answers are signatures, never a decryption of a share ciphertext.
+
+The admin role alone imports the key, with no approver order: the key
+opens nothing the runner holds, a host can spoil its record and an admin
+can then import another, and a wrong key only stops the SSV node (its
+operator ID no longer matches). The shares themselves come in as for any
+dv_share signer, under an import order (`signer-admin ssv-split`, then
+`import-draft` and `import`). Tests: TestOperatorKey,
+TestOperatorKeyStateCopy, TestOperatorKeyReplaceUnopened, TestOperatorKeyRefused, TestRoleTable (tee-signer/server),
+TestSSVDevRunner (signer-admin).
 
 ### Voluntary exits
 
@@ -1297,6 +1339,9 @@ has mutual TLS.
 | 0x07 | IMPORT_SHARE_SEALED | no | no | yes |
 | 0x08 | CONFIG_UPDATE | no | no | yes |
 | 0x0a | IMPORT_SHARES_SEALED | no | no | yes |
+| 0x0b | OPERATOR_IDENTITY | yes | no | yes |
+| 0x0c | OPERATOR_SIGN | yes | no | no |
+| 0x0d | IMPORT_OPERATOR_KEY_SEALED | no | no | yes |
 | any other | | no | no | no |
 
 A voluntary exit is the admin role's only SIGN: a signing certificate gets

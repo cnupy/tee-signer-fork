@@ -27,6 +27,11 @@ const (
 	// TypeImportBatch loads many shares encrypted to the import key under
 	// one import order (IMPORT_SHARES_SEALED).
 	TypeImportBatch wire.MsgType = 0x0a
+	// TypeImportOperatorKey loads the SSV operator's RSA private key
+	// (PKCS #1 DER) encrypted to the import key
+	// (IMPORT_OPERATOR_KEY_SEALED). A dv_share runner takes one, once;
+	// the answer is its public key (PKIX DER).
+	TypeImportOperatorKey wire.MsgType = 0x0d
 )
 
 // readVersion checks the version byte an answer starts with and returns

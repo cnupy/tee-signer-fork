@@ -306,3 +306,29 @@ func TestImportShareIndexU64(t *testing.T) {
 		}
 	}
 }
+
+// IMPORT_OPERATOR_KEY_SEALED: version, then the sealed key; nothing else
+// decodes.
+func TestImportOperatorKey(t *testing.T) {
+	sealed := bytes.Repeat([]byte{7}, 300)
+	p, err := EncodeImportOperatorKey(sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := DecodeImportOperatorKey(p); err != nil || !bytes.Equal(got, sealed) {
+		t.Fatalf("round trip: %v", err)
+	}
+	for name, b := range map[string][]byte{
+		"empty":        nil,
+		"version 2":    append([]byte{2}, sealed...),
+		"no key":       {OperatorKeyVersion},
+		"over the cap": append([]byte{OperatorKeyVersion}, make([]byte, MaxOperatorKey+1)...),
+	} {
+		if _, err := DecodeImportOperatorKey(b); err == nil {
+			t.Errorf("%s: decoded", name)
+		}
+	}
+	if _, err := EncodeImportOperatorKey(make([]byte, MaxOperatorKey+1)); err == nil {
+		t.Error("a sealed key over the cap encoded")
+	}
+}
