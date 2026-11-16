@@ -16,17 +16,34 @@
 #   5. copy what a release ships into DIST, with DIST/SHA256SUMS. The names
 #      carry the chain, and -test for IMAGE_VARIANT=test.
 #
+# DIST is taken relative to the folder the lane is called from. It must be
+# new or empty: each lane writes its own DIST.
+#
+# What a lane proves. One lane alone proves nothing about its own bytes:
+# the tree checks only stop honest mistakes on the build host. The proof is
+# a second lane by another party, on its own machine, compared with
+# release/compare.sh (or its fingerprints with the published values).
+# RELEASE_BUILDER_IMAGE with RELEASE_BUILDER_ID reuses a builder image to
+# save time; the id comes from the same caller, so it guards against a
+# moved tag, not against another image. It is not a trust anchor.
+#
+# Variants. IMAGE_VARIANT changes the GCP and Azure images only (log
+# redirect and stdio); the Nitro EIF's measured content is the same in
+# both, so its PCRs are too. Of the names, only the DIST names carry -test. A mainnet lane is prod only.
+#
 # Host prerequisites. The lane checks them before its first long step and
 # names the fix of each one that is missing; it installs nothing.
+#   - An x86_64 build host. The builder image has the amd64 Go and the
+#     aarch64 cross gcc; the arm64 outputs (runner-aws, the EIF, the parent
+#     tools) are cross-built on it.
 #   - Docker with the containerd image store and buildx.
 #   - qemu-user-static (binfmt_misc entry qemu-aarch64 with the F flag) for
-#     the arm64 linuxkit, on an x86_64 host. Docker Desktop has its own.
+#     the arm64 linuxkit of the EIF build. Docker Desktop has its own.
 #   - az with the confcom extension at the version of AZ_CONFCOM_VERSION.
 #   - git, python3, jq, file, cc (build-essential), nm and readelf
-#     (binutils), and the other arch's nm (binutils-aarch64-linux-gnu on an
-#     x86_64 host, binutils-x86-64-linux-gnu on an arm64 one): the NTS step
-#     checks its archives with them on the host. scripts/deps.sh installs
-#     these.
+#     (binutils), and the aarch64 nm (binutils-aarch64-linux-gnu): the NTS
+#     step checks its archives with them on the host. scripts/deps.sh
+#     installs these.
 #   - A Go of any version on PATH (it only reads build info; the build uses
 #     the builder's).
 #   - unshare and ip (util-linux, iproute2), and unprivileged user
@@ -37,23 +54,46 @@
 set -euo pipefail
 umask 022
 DIST="${1:?usage: release-build.sh DIST}"
+die() { echo "release-build: $*" >&2; exit 1; }
+# Absolute, relative to the caller's folder: the lane works at the repo
+# root, and docker run -v reads a relative name as a volume.
+DIST="$(realpath -m -- "$DIST")"
+# dist_free: DIST is missing or an empty folder. A lane never removes an
+# earlier lane's output.
+dist_free() {
+  [ ! -e "$DIST" ] || { [ -d "$DIST" ] && [ -z "$(ls -A -- "$DIST")" ]; } ||
+    die "DIST $DIST exists and is not empty: give a new or empty folder (each lane writes its own DIST)"
+}
+dist_free
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 # shellcheck source=../scripts/common.sh
 . "$ROOT/scripts/common.sh"
-die() { echo "release-build: $*" >&2; exit 1; }
+[ "$HOST_ARCH" = x86_64 ] ||
+  die "this host is $HOST_ARCH: the build host must be x86_64 (arm64 images are cross-built)"
 
 AZ_CONFCOM_VERSION=2.3.0
 IMAGE_VARIANT="${IMAGE_VARIANT:-prod}"
 export IMAGE_VARIANT
 case "$IMAGE_VARIANT" in prod | test) ;; *) die "IMAGE_VARIANT must be prod or test" ;; esac
+! chain_is_prod "$CHAIN" || [ "$IMAGE_VARIANT" = prod ] ||
+  die "$CHAIN builds are prod only: a test image shows the runner's logs (IMAGE_VARIANT=test is for test chains)"
 
 # tree_clean ALLOW: no local change, no untracked file, and no ignored file
 # or folder besides those that match the regex ALLOW (git status names an
-# ignored folder as "!! name/").
+# ignored folder as "!! name/"). No tracked file may carry the
+# skip-worktree or assume-unchanged bit: git status does not show a change
+# to such a file.
 tree_clean() {
-  local left
-  left="$(git status --porcelain --untracked-files=normal --ignored=matching | grep -Ev "^!! ($1)\$" || true)"
+  local st flags left
+  st="$(git status --porcelain --untracked-files=normal --ignored=matching)" ||
+    die "git status failed: the lane cannot check the tree"
+  flags="$(git ls-files -v)" || die "git ls-files failed: the lane cannot check the tree"
+  # git ls-files -v tags skip-worktree files S and assume-unchanged files
+  # with a lower-case letter.
+  flags="$(printf '%s\n' "$flags" | grep -E '^([a-z]|S) ' || true)"
+  [ -z "$flags" ] || die "tracked files with the skip-worktree or assume-unchanged bit, so git status hides their changes: $(echo "$flags" | head -n 5 | tr '\n' ' ')(clear it with git update-index --no-skip-worktree --no-assume-unchanged FILE)"
+  left="$(printf '%s\n' "$st" | grep -Ev "^!! ($1)\$" || true)"
   [ -z "$left" ] || die "the tree is not a clean checkout: $(echo "$left" | head -n 5 | tr '\n' ' ')"
 }
 # A lane starts without build/ (blst, the module cache and other outputs of
@@ -170,7 +210,7 @@ python3 -I release/image-variant.py "$IMAGE_VARIANT" "$BUILD/generic$sfx/fingerp
 # test lane.
 c="$CHAIN"
 [ "$IMAGE_VARIANT" = prod ] || c="$CHAIN-$IMAGE_VARIANT"
-rm -rf "$DIST"
+dist_free
 mkdir -p "$DIST"
 # The lane's own values, which release/measurements.py checks its arguments against.
 {
@@ -179,10 +219,12 @@ mkdir -p "$DIST"
   echo "commit $commit"
   echo "chain $CHAIN"
 } >"$DIST/fingerprints-$c.txt"
+bases=()
 for spec in "aarch64:runner-aws$sfx" "x86_64:runner-azure$sfx" "x86_64:runner-gcp$sfx" \
   aarch64:hostagent aarch64:forwarder aarch64:udprelay x86_64:setup-tool aarch64:setup-tool; do
   a="${spec%%:*}" n="${spec#*:}"
   base="$n-$c-linux-$(goarch_of "$a")"
+  bases+=("$base")
   install -m 0555 "$BUILD/$a/bin/$n" "$DIST/$base"
   tar -C "$BUILD/$a/bin" --sort=name --owner=0 --group=0 --numeric-owner \
     --mtime="@$SOURCE_DATE_EPOCH" -czf "$DIST/$base.licenses.tar.gz" "$n.licenses"
@@ -190,6 +232,9 @@ for spec in "aarch64:runner-aws$sfx" "x86_64:runner-azure$sfx" "x86_64:runner-gc
     -e SOURCE_DATE_EPOCH -v "$SIGNER_GOMODCACHE:/gomod:ro" -v "$ROOT:$ROOT" -v "$DIST:/dist" -w "$ROOT" \
     "$SIGNER_BUILDER_IMAGE" sh -c 'python3 -I release/sbom.py --name "$1" --builder-packages /builder-packages.txt "$2" >"/dist/$1.spdx.json"' \
     _ "$base" "$BUILD/$a/bin/$n"
+done
+for base in "${bases[@]}"; do
+  [ -s "$DIST/$base.spdx.json" ] || die "the SBOM $DIST/$base.spdx.json is missing or empty"
 done
 cp "$BUILD/nitro$sfx/runner-aarch64.eif" "$DIST/runner-aws-$c-aarch64.eif"
 cp "$BUILD/nitro$sfx/build-enclave-aarch64.json" "$DIST/runner-aws-$c-aarch64.build-enclave.json"

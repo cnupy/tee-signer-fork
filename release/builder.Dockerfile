@@ -18,7 +18,9 @@
 # backends") for a random part of the .deb files on 2026-11-09, so the
 # download step loops: each try keeps what it fetched, and apt checks every
 # file against the signed Release. A failed fetch fails the build, never
-# changes the bytes.
+# changes the bytes. apt-get update fails on any index it cannot fetch
+# (APT::Update::Error-Mode=any); without that, a source it cannot reach is
+# only a warning and the packages come from the other sources.
 #
 # Bump one pin at a time and record the runner sha256 before and after in
 # the PR: a new gcc, glibc or Go changes the runner, so the measurements.
@@ -36,7 +38,7 @@ RUN rm -f /etc/apt/sources.list.d/debian.sources \
     "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/${SNAPSHOT} bookworm-updates main" \
     "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/${SNAPSHOT} bookworm-security main" \
     >/etc/apt/sources.list \
- && apt-get -o Acquire::Retries=5 update \
+ && apt-get -o Acquire::Retries=5 -o APT::Update::Error-Mode=any update \
  && pkgs="gcc libc6-dev binutils gcc-aarch64-linux-gnu libc6-dev-arm64-cross binutils-aarch64-linux-gnu file ca-certificates python3 jq" \
  && ok=0 && for i in $(seq 1 30); do \
       apt-get -o Acquire::Retries=3 -qq install -d -y --no-install-recommends $pkgs && { ok=1; break; }; \
