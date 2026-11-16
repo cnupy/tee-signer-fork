@@ -124,6 +124,16 @@
 //	    share and the group key against them, and write the split file of
 //	    import-draft and import (dvsplit.go). import then takes a shares
 //	    file that names each share by its own key, as for single mode.
+//	signer-admin ssv-split -keyshares FILE -operator-id ID -operator-key FILE [-password-file FILE] -signer NAME -shares FILE [-out split.json] [-allow-swap]
+//	    For a dv_share signer behind an SSV node: check each validator of a
+//	    keyshares file (share keys against the validator key, at the
+//	    operator IDs), decrypt this operator's shares with its key, and
+//	    write the split file and the shares file for import (ssv.go). The
+//	    shares file is new, of mode 0600, on tmpfs; swap must be off (or
+//	    -allow-swap), core dumps are turned off.
+//	signer-admin ssv-operator-key -cluster cluster.json -signer NAME -operator-key FILE [-password-file FILE]
+//	    Import the SSV operator key into a dv_share signer, sealed to its
+//	    attested import key; prints the public key it then serves.
 //	signer-admin issue-client-cert -ca-cert FILE -ca-key FILE -role admin|attest|signing -name CN -out DIR
 //	signer-admin issue-client-cert -ca-cert FILE -ca-key FILE -make-intermediate ROLE -name CN -out DIR
 //	    Issue one client certificate of a role, or a role intermediate from
@@ -209,6 +219,8 @@ const usage = `usage:
   signer-admin exit-combine -split FILE [-pubkey 0x...] [-index N] [-epoch E] -out exit.json PARTIALS...
   signer-admin split -keystores DIR -password-file FILE -t T -n N -signers NAME,... [-chain mainnet|hoodi|devnet|ci-test] [-expect FILE] [-allow-swap] -out DIR
   signer-admin dv-split -lock cluster-lock.json -signers NAME=INDEX[,NAME=INDEX...] [-out split.json]
+  signer-admin ssv-split -keyshares FILE -operator-id ID -operator-key FILE [-password-file FILE] -signer NAME -shares FILE [-out split.json] [-allow-swap]
+  signer-admin ssv-operator-key -cluster cluster.json -signer NAME -operator-key FILE [-password-file FILE]
   signer-admin issue-client-cert -ca-cert FILE -ca-key FILE -role admin|attest|signing|-make-intermediate ROLE -name CN -out DIR`
 
 func run(args []string, out io.Writer) error {
@@ -220,6 +232,8 @@ func run(args []string, out io.Writer) error {
 		"show": cmdShow, "sign": cmdSign, "assemble": cmdAssemble, "push": cmdPush,
 		"probe": cmdProbe, "import-draft": cmdImportDraft, "import": cmdImport, "exit": cmdExit, "exit-combine": cmdExitCombine, "split": cmdSplit,
 		"dv-split":          cmdDVSplit,
+		"ssv-split":         cmdSSVSplit,
+		"ssv-operator-key":  cmdSSVOperatorKey,
 		"issue-client-cert": cmdIssueClientCert, "approver-key": cmdApproverKey,
 	}
 	cmd, ok := cmds[args[0]]
