@@ -25,11 +25,25 @@ type Policy struct {
 	// signer TA signs one only with an approval of its policy's approvers).
 	// The gateway refuses exits; the signer shim passes them on.
 	exitsToSigner bool
+	// groupRegistrations lets a registration name a key other than the
+	// signing one: an SSV operator's share signs the registration of its
+	// validator. The dv_share signer checks that the key is the share's
+	// group key (signer-protocol/docs/protocol.md, "Key rule lock").
+	groupRegistrations bool
 }
 
 // PassExitsToSigner makes Check leave voluntary exits to the signer.
 func (p *Policy) PassExitsToSigner() *Policy {
 	p.exitsToSigner = true
+
+	return p
+}
+
+// PassGroupKeyRegistrations lets a builder registration name a key other
+// than the signing key and leaves that key to the signer, which signs it
+// only for a dv_share key whose group key it is.
+func (p *Policy) PassGroupKeyRegistrations() *Policy {
+	p.groupRegistrations = true
 
 	return p
 }
@@ -59,7 +73,7 @@ func (p *Policy) Check(pubkey phase0.BLSPubKey, job *signing.Job) error {
 		}
 	case signing.TypeValidatorRegistration:
 		reg := job.Registration
-		if reg.Pubkey != pubkey {
+		if reg.Pubkey != pubkey && !p.groupRegistrations {
 			return &RefusedError{Reason: fmt.Sprintf("registration pubkey %#x differs from signing key %#x", reg.Pubkey, pubkey)}
 		}
 		if !p.feeRecipients[reg.FeeRecipient] {

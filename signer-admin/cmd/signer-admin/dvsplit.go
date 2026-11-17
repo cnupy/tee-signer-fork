@@ -60,7 +60,7 @@ func dvSplit(path string) (*splitFile, error) {
 		return nil, fmt.Errorf("%s: threshold %d of %d public shares, want 1 <= t <= n <= 255", path, t, n)
 	}
 	sf := &splitFile{T: uint8(t), N: uint8(n)}
-	ids := make([]uint64, t)
+	ids := make([]uint64, n)
 	for i := range ids {
 		ids[i] = uint64(i + 1)
 	}
@@ -73,22 +73,33 @@ func dvSplit(path string) (*splitFile, error) {
 			return nil, fmt.Errorf("%s: validator %s is listed twice", path, dv.Group)
 		}
 		seen[dv.Group] = true
-		comm, err := threshold.Commitments(ids, dv.Shares[:t])
+		comm, err := groupCommitments(dv.Group, ids, dv.Shares, t)
 		if err != nil {
-			return nil, fmt.Errorf("%s: validator %s: %w", path, dv.Group, err)
-		}
-		if comm[0] != dv.Group {
-			return nil, fmt.Errorf("%s: validator %s: its public shares interpolate to another key, %s", path, dv.Group, comm[0])
-		}
-		for i, ps := range dv.Shares {
-			got, err := threshold.FeldmanEval(comm, uint64(i+1))
-			if err != nil || got != ps {
-				return nil, fmt.Errorf("%s: validator %s: public share %d is not on the polynomial of shares 1 to %d: the lock is inconsistent", path, dv.Group, i+1, t)
-			}
+			return nil, fmt.Errorf("%s: validator %s: %w: the lock is inconsistent", path, dv.Group, err)
 		}
 		sf.Validators = append(sf.Validators, splitValidator{Pubkey: dv.Group, Commitments: comm})
 	}
 	return sf, nil
+}
+
+// groupCommitments computes the commitments of a t-of-n split from its
+// public shares at x coordinates ids (a Charon share index, an SSV operator
+// ID), and checks that commitment 0 is the group key and that every public
+// share is the commitments' value at its x.
+func groupCommitments(group cloud.Pubkey, ids []uint64, shares []cloud.Pubkey, t int) ([]cloud.Pubkey, error) {
+	comm, err := threshold.Commitments(ids[:t], shares[:t])
+	if err != nil {
+		return nil, err
+	}
+	if comm[0] != group {
+		return nil, fmt.Errorf("its public shares interpolate to another key, %s", comm[0])
+	}
+	for i, ps := range shares {
+		if got, err := threshold.FeldmanEval(comm, ids[i]); err != nil || got != ps {
+			return nil, fmt.Errorf("public share %d is not on the polynomial of the first %d shares", ids[i], t)
+		}
+	}
+	return comm, nil
 }
 
 func cmdDVSplit(args []string, out io.Writer) error {
@@ -106,7 +117,7 @@ func cmdDVSplit(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	sf.Shares = map[string]uint8{}
+	sf.Shares = map[string]uint64{}
 	for _, p := range strings.Split(*signersArg, ",") {
 		name, idx, ok := strings.Cut(p, "=")
 		i, err := strconv.ParseUint(idx, 10, 8)
@@ -116,7 +127,7 @@ func cmdDVSplit(args []string, out io.Writer) error {
 		if _, dup := sf.Shares[name]; dup {
 			return fmt.Errorf("-signers: %s named twice", name)
 		}
-		sf.Shares[name] = uint8(i)
+		sf.Shares[name] = i
 	}
 	if err := setupwire.CheckShareIndices(int(sf.N), sf.Shares); err != nil {
 		return fmt.Errorf("-signers: %w", err)
@@ -142,7 +153,7 @@ func cmdDVSplit(args []string, out io.Writer) error {
 // key and the line's key as share_pubkey. markKey keeps the line's key,
 // under which a Charon validator client's slashing protection file lists
 // the share. It returns how many lines it filed.
-func fileDVShares(shares []share, split *splitFile, idx uint8) (int, error) {
+func fileDVShares(shares []share, split *splitFile, idx uint64) (int, error) {
 	at := map[cloud.Pubkey]cloud.Pubkey{}
 	known := map[cloud.Pubkey]bool{}
 	for _, v := range split.Validators {

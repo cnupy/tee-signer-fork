@@ -94,7 +94,7 @@ func cmdSplit(args []string, out io.Writer) error {
 	if *n > 8 {
 		return fmt.Errorf("-n %d: at most 8 shares", *n)
 	}
-	idx := map[string]uint8{}
+	idx := map[string]uint64{}
 	for i, name := range names {
 		if !splitNameOK(name) {
 			return fmt.Errorf("-signers: name %q: want letters, digits, '.', '_' or '-', not starting with '.'", name)
@@ -102,7 +102,7 @@ func cmdSplit(args []string, out io.Writer) error {
 		if _, ok := idx[name]; ok {
 			return fmt.Errorf("-signers: %s twice", name)
 		}
-		idx[name] = uint8(i + 1)
+		idx[name] = uint64(i + 1)
 	}
 	c, err := runnerchain.Parse(*chain)
 	if err != nil {
@@ -192,7 +192,7 @@ func cmdSplit(args []string, out io.Writer) error {
 // writeSplit splits each key and writes the three outputs into the new
 // folder dir, then reads split.json and each shares.txt back with the
 // readers of import-draft and import.
-func writeSplit(dir string, names []string, idx map[string]uint8, t, n int, want []cloud.Pubkey, byPub map[cloud.Pubkey]*dealtKey, out io.Writer) error {
+func writeSplit(dir string, names []string, idx map[string]uint64, t, n int, want []cloud.Pubkey, byPub map[cloud.Pubkey]*dealtKey, out io.Writer) error {
 	if err := os.Mkdir(filepath.Join(dir, "shares"), 0o700); err != nil {
 		return err
 	}
@@ -208,7 +208,7 @@ func writeSplit(dir string, names []string, idx map[string]uint8, t, n int, want
 	manifest := struct {
 		T          int                 `json:"t"`
 		N          int                 `json:"n"`
-		ShareIndex map[string]uint8    `json:"share_index"`
+		ShareIndex map[string]uint64   `json:"share_index"`
 		Validators []manifestValidator `json:"validators"`
 		SplitSHA   string              `json:"split_sha256"`
 	}{T: t, N: n, ShareIndex: idx}
@@ -409,25 +409,29 @@ type dealtKey struct {
 }
 
 type keystoreFile struct {
-	Crypto struct {
-		KDF struct {
-			Function string         `json:"function"`
-			Params   map[string]any `json:"params"`
-		} `json:"kdf"`
-		Checksum struct {
-			Function string `json:"function"`
-			Message  string `json:"message"`
-		} `json:"checksum"`
-		Cipher struct {
-			Function string `json:"function"`
-			Params   struct {
-				IV string `json:"iv"`
-			} `json:"params"`
-			Message string `json:"message"`
-		} `json:"cipher"`
-	} `json:"crypto"`
-	Pubkey  string `json:"pubkey"`
-	Version int    `json:"version"`
+	Crypto  keystoreCrypto `json:"crypto"`
+	Pubkey  string         `json:"pubkey"`
+	Version int            `json:"version"`
+}
+
+// keystoreCrypto is the crypto part of an EIP-2335 keystore. ssv-node's
+// encrypted operator key has these fields at the top level (ssv.go).
+type keystoreCrypto struct {
+	KDF struct {
+		Function string         `json:"function"`
+		Params   map[string]any `json:"params"`
+	} `json:"kdf"`
+	Checksum struct {
+		Function string `json:"function"`
+		Message  string `json:"message"`
+	} `json:"checksum"`
+	Cipher struct {
+		Function string `json:"function"`
+		Params   struct {
+			IV string `json:"iv"`
+		} `json:"params"`
+		Message string `json:"message"`
+	} `json:"cipher"`
 }
 
 // readKeystores decrypts every keystore-*.json of dir with the password in
@@ -497,63 +501,12 @@ func decryptKeystore(path string, password []byte, secret *[32]byte) (cloud.Pubk
 	if ks.Version != 4 {
 		return fail("keystore version %d, want 4", ks.Version)
 	}
-	c := &ks.Crypto
-	p := c.KDF.Params
-	salt, err := hex.DecodeString(ksString(p["salt"]))
-	if err != nil || len(salt) == 0 {
-		return fail("kdf salt: want hex")
-	}
-	if ksInt(p["dklen"]) != 32 {
-		return fail("kdf dklen %v, want 32", p["dklen"])
-	}
-	var dk []byte
-	switch c.KDF.Function {
-	case "scrypt":
-		n, r, par := ksInt(p["n"]), ksInt(p["r"]), ksInt(p["p"])
-		// 128 * n * r bytes of memory, 128 * r * p more, and work n * r * p.
-		// The EIP-2335 default is n * r * p = 2^21 (256 MiB); the cap is
-		// 2^24.
-		if n < 2 || r < 1 || par < 1 || n > 1<<24/r || par > 1<<24/(n*r) {
-			return fail("scrypt n %d, r %d, p %d: out of range", n, r, par)
-		}
-		dk, err = scrypt.Key(password, salt, n, r, par, 32)
-	case "pbkdf2":
-		iter := ksInt(p["c"])
-		// The EIP-2335 default is c = 2^18; the cap is 2^24.
-		if ksString(p["prf"]) != "hmac-sha256" || iter < 1 || iter > 1<<24 {
-			return fail("pbkdf2 prf %v, c %v: want hmac-sha256 and 1 <= c <= 2^24", p["prf"], p["c"])
-		}
-		// pbkdf2.Key takes a string; a conversion would copy the password
-		// where nothing clears it, so the string shares the caller's bytes.
-		dk, err = pbkdf2.Key(sha256.New, unsafe.String(unsafe.SliceData(password), len(password)), salt, iter, 32)
-	default:
-		return fail("kdf %q, want scrypt or pbkdf2", c.KDF.Function)
-	}
-	if err != nil {
-		return fail("kdf: %v", err)
-	}
-	defer clear(dk)
-	ct, err := hex.DecodeString(c.Cipher.Message)
-	if err != nil {
-		return fail("cipher message: want hex")
-	}
-	h := sha256.Sum256(append(slices.Clone(dk[16:32]), ct...))
-	sum, err := hex.DecodeString(c.Checksum.Message)
-	if c.Checksum.Function != "sha256" || err != nil || !slices.Equal(sum, h[:]) {
-		return fail("checksum mismatch (wrong password?)")
-	}
-	if c.Cipher.Function != "aes-128-ctr" || len(ct) != 32 {
-		return fail("cipher %s with %d bytes, want aes-128-ctr with 32", c.Cipher.Function, len(ct))
-	}
-	iv, err := hex.DecodeString(c.Cipher.Params.IV)
-	if err != nil || len(iv) != aes.BlockSize {
-		return fail("cipher iv: want 16 bytes of hex")
-	}
-	blk, err := aes.NewCipher(dk[:16])
+	plain, err := ks.Crypto.open(password, len(secret))
 	if err != nil {
 		return fail("%v", err)
 	}
-	cipher.NewCTR(blk, iv).XORKeyStream(secret[:], ct)
+	copy(secret[:], plain)
+	clear(plain)
 	// PubkeyOf takes the secret by value: one copy this code cannot clear.
 	got, err := core.PubkeyOf(*secret)
 	if err != nil {
@@ -563,6 +516,70 @@ func decryptKeystore(path string, password []byte, secret *[32]byte) (cloud.Pubk
 		return fail("the public key of the secret is not the keystore's pubkey")
 	}
 	return got, nil
+}
+
+// open decrypts the secret with password (kdf scrypt or pbkdf2 with
+// hmac-sha256, checksum sha256, cipher aes-128-ctr). size is the length
+// the secret must have, 0 for any. The caller clears the result.
+func (c *keystoreCrypto) open(password []byte, size int) ([]byte, error) {
+	p := c.KDF.Params
+	salt, err := hex.DecodeString(ksString(p["salt"]))
+	if err != nil || len(salt) == 0 {
+		return nil, errors.New("kdf salt: want hex")
+	}
+	if ksInt(p["dklen"]) != 32 {
+		return nil, fmt.Errorf("kdf dklen %v, want 32", p["dklen"])
+	}
+	var dk []byte
+	switch c.KDF.Function {
+	case "scrypt":
+		n, r, par := ksInt(p["n"]), ksInt(p["r"]), ksInt(p["p"])
+		// 128 * n * r bytes of memory, 128 * r * p more, and work n * r * p.
+		// The EIP-2335 default is n * r * p = 2^21 (256 MiB); the cap is
+		// 2^24.
+		if n < 2 || r < 1 || par < 1 || n > 1<<24/r || par > 1<<24/(n*r) {
+			return nil, fmt.Errorf("scrypt n %d, r %d, p %d: out of range", n, r, par)
+		}
+		dk, err = scrypt.Key(password, salt, n, r, par, 32)
+	case "pbkdf2":
+		iter := ksInt(p["c"])
+		// The EIP-2335 default is c = 2^18; the cap is 2^24.
+		if ksString(p["prf"]) != "hmac-sha256" || iter < 1 || iter > 1<<24 {
+			return nil, fmt.Errorf("pbkdf2 prf %v, c %v: want hmac-sha256 and 1 <= c <= 2^24", p["prf"], p["c"])
+		}
+		// pbkdf2.Key takes a string; a conversion would copy the password
+		// where nothing clears it, so the string shares the caller's bytes.
+		dk, err = pbkdf2.Key(sha256.New, unsafe.String(unsafe.SliceData(password), len(password)), salt, iter, 32)
+	default:
+		return nil, fmt.Errorf("kdf %q, want scrypt or pbkdf2", c.KDF.Function)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("kdf: %v", err)
+	}
+	defer clear(dk)
+	ct, err := hex.DecodeString(c.Cipher.Message)
+	if err != nil {
+		return nil, errors.New("cipher message: want hex")
+	}
+	h := sha256.Sum256(append(slices.Clone(dk[16:32]), ct...))
+	sum, err := hex.DecodeString(c.Checksum.Message)
+	if c.Checksum.Function != "sha256" || err != nil || !slices.Equal(sum, h[:]) {
+		return nil, errors.New("checksum mismatch (wrong password?)")
+	}
+	if c.Cipher.Function != "aes-128-ctr" || len(ct) == 0 || size != 0 && len(ct) != size {
+		return nil, fmt.Errorf("cipher %s with %d bytes, want aes-128-ctr with %d", c.Cipher.Function, len(ct), size)
+	}
+	iv, err := hex.DecodeString(c.Cipher.Params.IV)
+	if err != nil || len(iv) != aes.BlockSize {
+		return nil, errors.New("cipher iv: want 16 bytes of hex")
+	}
+	blk, err := aes.NewCipher(dk[:16])
+	if err != nil {
+		return nil, err
+	}
+	plain := make([]byte, len(ct))
+	cipher.NewCTR(blk, iv).XORKeyStream(plain, ct)
+	return plain, nil
 }
 
 func ksString(v any) string { s, _ := v.(string); return s }

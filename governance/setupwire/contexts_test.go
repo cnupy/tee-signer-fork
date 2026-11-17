@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/lidofinance/tee-signer/signer-protocol"
+	wireadmin "github.com/lidofinance/tee-signer/signer-protocol/wire/admin"
 )
 
 // The names are distinct, so with the length prefix no input under one
@@ -26,15 +27,18 @@ func TestContexts(t *testing.T) {
 		seen[name] = true
 	}
 	// The TA header lists the same names except the import order, the
-	// hash-then-sign and the handover carry contexts, which are the
-	// runner's only.
-	if len(Contexts) != 35 {
+	// hash-then-sign, the handover carry and the two operator key
+	// contexts, which are the runner's only.
+	if len(Contexts) != 37 {
 		t.Fatalf("%d contexts; add a new one to Contexts and to the TA header", len(Contexts))
 	}
 	// Package backend cannot import this one, so it holds the names of the
 	// user data and key release contexts itself.
 	if backend.IdentityContext != CtxRunnerIdentity.String() || backend.AttestContext != CtxRunnerAttest.String() {
 		t.Fatalf("backend's contexts %q and %q are not the registry's", backend.IdentityContext, backend.AttestContext)
+	}
+	if string(wireadmin.OperatorKeyAAD) != CtxOperatorKeyImport.String() {
+		t.Fatalf("wire/admin's operator key AAD %q is not the registry's", wireadmin.OperatorKeyAAD)
 	}
 	if backend.KeyReleaseContext != CtxKeyRelease.String() {
 		t.Fatalf("backend's context %q is not the registry's", backend.KeyReleaseContext)

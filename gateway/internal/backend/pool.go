@@ -523,6 +523,38 @@ func (n *node) Health(ctx context.Context) (*proto.Health, error) {
 	return h, err
 }
 
+func (n *node) OperatorIdentity(ctx context.Context) ([]byte, error) {
+	var pub []byte
+	err := n.do(ctx, func(c runner) error {
+		o, ok := c.(operatorRunner)
+		if !ok {
+			return errNoOperator
+		}
+		var err error
+		pub, err = o.OperatorIdentity(ctx)
+
+		return err
+	})
+
+	return pub, err
+}
+
+func (n *node) OperatorSign(ctx context.Context, digest [32]byte) ([]byte, error) {
+	var sig []byte
+	err := n.do(ctx, func(c runner) error {
+		o, ok := c.(operatorRunner)
+		if !ok {
+			return errNoOperator
+		}
+		var err error
+		sig, err = o.OperatorSign(ctx, digest)
+
+		return err
+	})
+
+	return sig, err
+}
+
 func (n *node) Sign(ctx context.Context, req proto.SignRequest) (proto.Signature, error) {
 	var sig proto.Signature
 	err := n.do(ctx, func(c runner) error {

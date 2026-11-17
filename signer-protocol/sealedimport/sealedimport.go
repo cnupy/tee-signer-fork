@@ -67,6 +67,12 @@ func Seal(id *backend.Identity, req *backend.SealedImportRequest, secret *[32]by
 // SealAAD is Seal with the associated data aad instead of a sealed
 // import's header. The caller must have verified id first.
 func SealAAD(id *backend.Identity, aad []byte, secret *[32]byte) ([]byte, error) {
+	return SealBytes(id, aad, secret[:])
+}
+
+// SealBytes is SealAAD for a secret of any length (the SSV operator key).
+// The caller must have verified id first.
+func SealBytes(id *backend.Identity, aad, secret []byte) ([]byte, error) {
 	k, d, a := Suite()
 	if id.ImportKEM != k || id.ImportKDF != d || id.ImportAEAD != a {
 		return nil, fmt.Errorf("sealedimport: runner offers suite %#04x/%#04x/%#04x, want %#04x/%#04x/%#04x (hybrid ML-KEM-768-X25519)",
@@ -80,7 +86,7 @@ func SealAAD(id *backend.Identity, aad []byte, secret *[32]byte) ([]byte, error)
 	if err != nil {
 		return nil, err
 	}
-	ct, err := s.Seal(aad, secret[:])
+	ct, err := s.Seal(aad, secret)
 	if err != nil {
 		return nil, err
 	}
@@ -98,21 +104,9 @@ func (k *Key) Open(req *backend.SealedImportRequest) ([32]byte, error) {
 // OpenAAD decrypts a share that SealAAD sealed with aad.
 func (k *Key) OpenAAD(sealed, aad []byte) ([32]byte, error) {
 	var secret [32]byte
-	b := sealed
-	if len(b) < 2 {
-		return secret, errors.New("sealedimport: short sealed share")
-	}
-	n := int(binary.BigEndian.Uint16(b))
-	if len(b) < 2+n {
-		return secret, errors.New("sealedimport: short sealed share")
-	}
-	r, err := hpke.NewRecipient(b[2:2+n], k.priv, kdf, aead, []byte(info))
+	plain, err := k.OpenBytes(sealed, aad)
 	if err != nil {
-		return secret, fmt.Errorf("sealedimport: %w", err)
-	}
-	plain, err := r.Open(aad, b[2+n:])
-	if err != nil {
-		return secret, errors.New("sealedimport: open failed (sealed for another runner, or header changed)")
+		return secret, err
 	}
 	defer clear(plain)
 	if len(plain) != len(secret) {
@@ -120,4 +114,26 @@ func (k *Key) OpenAAD(sealed, aad []byte) ([32]byte, error) {
 	}
 	copy(secret[:], plain)
 	return secret, nil
+}
+
+// OpenBytes decrypts a secret of any length that SealBytes sealed with
+// aad. The caller clears the result.
+func (k *Key) OpenBytes(sealed, aad []byte) ([]byte, error) {
+	b := sealed
+	if len(b) < 2 {
+		return nil, errors.New("sealedimport: short sealed secret")
+	}
+	n := int(binary.BigEndian.Uint16(b))
+	if len(b) < 2+n {
+		return nil, errors.New("sealedimport: short sealed secret")
+	}
+	r, err := hpke.NewRecipient(b[2:2+n], k.priv, kdf, aead, []byte(info))
+	if err != nil {
+		return nil, fmt.Errorf("sealedimport: %w", err)
+	}
+	plain, err := r.Open(aad, b[2+n:])
+	if err != nil {
+		return nil, errors.New("sealedimport: open failed (sealed for another runner, or header changed)")
+	}
+	return plain, nil
 }

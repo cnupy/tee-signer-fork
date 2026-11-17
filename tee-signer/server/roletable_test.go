@@ -46,17 +46,20 @@ func TestRoleTable(t *testing.T) {
 	types := []wire.MsgType{
 		wire.TypeHealth, wire.TypePublicKeys, wire.TypeSign, wire.TypeAttest, wireadmin.TypeImportShare, wire.TypeIdentity,
 		wireadmin.TypeImportSealed, wireadmin.TypeConfigUpdate, 0x09,
+		wire.TypeOperatorIdentity, wire.TypeOperatorSign, wireadmin.TypeImportOperatorKey,
 		0x00, 0x0a, 0x1f, 0x29, 0x30, 0x31, 0x32, 0x33, 0x34, 0x7f,
 	}
 	for typ := wire.MsgType(0x20); typ <= 0x28; typ++ {
 		types = append(types, typ)
 	}
 	// The types each role may send; the rest must be FORBIDDEN.
-	signing := map[wire.MsgType]bool{wire.TypeHealth: true, wire.TypePublicKeys: true, wire.TypeSign: true, wire.TypeIdentity: true}
+	signing := map[wire.MsgType]bool{wire.TypeHealth: true, wire.TypePublicKeys: true, wire.TypeSign: true, wire.TypeIdentity: true,
+		wire.TypeOperatorIdentity: true, wire.TypeOperatorSign: true}
 	attest := map[wire.MsgType]bool{wire.TypeHealth: true, wire.TypePublicKeys: true, wire.TypeAttest: true, wire.TypeIdentity: true}
 	adminOK := map[wire.MsgType]bool{}
 	for _, typ := range types {
-		adminOK[typ] = typ != wire.TypeSign && (typ < 0x09 || typ == wireadmin.TypeImportBatch) && typ != 0
+		adminOK[typ] = typ != wire.TypeSign && (typ < 0x09 || typ == wireadmin.TypeImportBatch ||
+			typ == wire.TypeOperatorIdentity || typ == wireadmin.TypeImportOperatorKey) && typ != 0
 	}
 
 	// An admin leaf straight under the root: admin rights in a non-prod build

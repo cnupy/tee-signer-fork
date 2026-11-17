@@ -60,6 +60,10 @@ type Config struct {
 	// Metrics, if set, receives the metrics of the signers, the keys and
 	// the signing.
 	Metrics *metrics.Gateway
+	// AllowNoKeys accepts signers that answer and hold no key. An SSV
+	// operator's signer holds none until its first validator is imported,
+	// and the SSV node needs the gateway (operator identity) before that.
+	AllowNoKeys bool
 }
 
 // Signers signs through the TEE signers. A request goes to every signer
@@ -100,6 +104,8 @@ type Signers struct {
 	newerLevel []int
 	// derived caches deriveGroup by validator key and share keys.
 	derived map[string]derivedGroup
+	// allowNoKeys: Config.AllowNoKeys.
+	allowNoKeys bool
 }
 
 type derivedGroup struct {
@@ -161,6 +167,7 @@ func New(cfg Config, log *slog.Logger) (*Signers, error) {
 	s := newSigners(names, nodes, cfg.MaxShareIndex, timeout, log)
 	s.certs = pc.certs
 	s.m = m
+	s.allowNoKeys = cfg.AllowNoKeys
 
 	return s, nil
 }
@@ -262,7 +269,12 @@ func (s *Signers) loadKeys(ctx context.Context) (map[phase0.BLSPubKey]group, err
 
 			continue
 		}
-		s.listed[i] = a.keys
+		// An answer with no key is an answer: s.listed[i] nil means none yet.
+		keys := a.keys
+		if keys == nil {
+			keys = []proto.ValidatorKey{}
+		}
+		s.listed[i] = keys
 		s.m.SignerKeysRefreshed.Set(float64(time.Now().UnixMilli())/1000, s.names[i])
 		switch {
 		case a.modeErr != nil:
@@ -322,7 +334,7 @@ func (s *Signers) loadKeys(ctx context.Context) (map[phase0.BLSPubKey]group, err
 		derived[id] = d
 	}
 	s.derived = derived
-	if len(groups) == 0 {
+	if len(groups) == 0 && !s.allowNoKeys {
 		return nil, errors.New("the signers hold no key the gateway can sign for")
 	}
 	s.m.Keys.Set(float64(len(groups)))

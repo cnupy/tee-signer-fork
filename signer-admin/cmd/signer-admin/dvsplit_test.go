@@ -140,7 +140,7 @@ func TestDVSplitRefusesInconsistentLock(t *testing.T) {
 // know, stays as it is.
 func TestFileDVShares(t *testing.T) {
 	c := newCharonCluster(t, 2, 3, 4)
-	sf := &splitFile{T: 3, N: 4, Shares: map[string]uint8{"d1": 2}}
+	sf := &splitFile{T: 3, N: 4, Shares: map[string]uint64{"d1": 2}}
 	for v, g := range c.groups {
 		sf.Validators = append(sf.Validators, splitValidator{Pubkey: g, Commitments: c.commitments[v]})
 	}

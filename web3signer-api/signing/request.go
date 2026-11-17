@@ -661,9 +661,37 @@ func buildSyncCommitteeMessage(req *requestJSON, chain Chain) (*Job, error) {
 // syncAggregatorSelectionDataJSON names the fields explicitly:
 // altair.SyncAggregatorSelectionData has no JSON tags, so a plain unmarshal
 // drops subcommittee_index and signs for subcommittee 0.
+//
+// The SSV node (ssvsigner/web3signer) sends subcommittee_index as a JSON
+// number, which Web3Signer takes as well; both fields take a decimal string
+// or a number.
 type syncAggregatorSelectionDataJSON struct {
-	Slot              string `json:"slot"`
-	SubcommitteeIndex string `json:"subcommittee_index"`
+	Slot              decimal `json:"slot"`
+	SubcommitteeIndex decimal `json:"subcommittee_index"`
+}
+
+// decimal is an unsigned integer field sent as a decimal string, as the
+// API has it, or as a bare JSON number.
+type decimal string
+
+func (d *decimal) UnmarshalJSON(b []byte) error {
+	if len(b) > 0 && b[0] == '"' {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		*d = decimal(s)
+
+		return nil
+	}
+	for _, c := range b {
+		if c < '0' || c > '9' {
+			return fmt.Errorf("want an unsigned decimal string or number, got %s", b)
+		}
+	}
+	*d = decimal(b)
+
+	return nil
 }
 
 func buildSyncSelectionProof(req *requestJSON, chain Chain) (*Job, error) {
@@ -671,11 +699,11 @@ func buildSyncSelectionProof(req *requestJSON, chain Chain) (*Job, error) {
 	if err := unmarshalField("sync_aggregator_selection_data", req.SyncAggregatorSelectionData, &m); err != nil {
 		return nil, err
 	}
-	slot, err := parseUint("sync_aggregator_selection_data.slot", m.Slot)
+	slot, err := parseUint("sync_aggregator_selection_data.slot", string(m.Slot))
 	if err != nil {
 		return nil, err
 	}
-	index, err := parseUint("sync_aggregator_selection_data.subcommittee_index", m.SubcommitteeIndex)
+	index, err := parseUint("sync_aggregator_selection_data.subcommittee_index", string(m.SubcommitteeIndex))
 	if err != nil {
 		return nil, err
 	}

@@ -61,21 +61,36 @@ func newTestServer(t *testing.T) (*httptest.Server, *fakeSigner) {
 
 func newTestServerLog(t *testing.T, logs io.Writer) (*httptest.Server, *fakeSigner) {
 	t.Helper()
+
+	return newTestServerWith(t, logs, nil, nil)
+}
+
+// newTestServerWith is newTestServerLog with the policy changed by pol and
+// the server by with, when set.
+func newTestServerWith(t *testing.T, logs io.Writer, pol func(*policy.Policy), with func(*Server) *Server) (*httptest.Server, *fakeSigner) {
+	t.Helper()
 	pk, ok := parsePubkey(pubHex)
 	if !ok {
 		t.Fatal("bad test key")
 	}
 	f := &fakeSigner{key: pk}
-	pol, err := policy.New([]string{allowedFeeRecipient})
+	p, err := policy.New([]string{allowedFeeRecipient})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if pol != nil {
+		pol(p)
 	}
 	h, err := eth2.NewHasher("mainnet")
 	if err != nil {
 		t.Fatal(err)
 	}
 	chain := signing.Chain{Hasher: h, SlotsPerEpoch: 32, GenesisForkVersion: phase0.Version{}}
-	srv := httptest.NewServer(New(f, pol, chain, slog.New(slog.NewTextHandler(logs, nil)), 0).Handler())
+	server := New(f, p, chain, slog.New(slog.NewTextHandler(logs, nil)), 0)
+	if with != nil {
+		server = with(server)
+	}
+	srv := httptest.NewServer(server.Handler())
 	t.Cleanup(srv.Close)
 
 	return srv, f

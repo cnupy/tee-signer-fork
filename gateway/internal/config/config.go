@@ -158,6 +158,11 @@ type Config struct {
 	Policy struct {
 		FeeRecipientAllowlist []string `yaml:"fee_recipient_allowlist"`
 	} `yaml:"policy"`
+	// SSVAPI serves the ssv-signer API next to the Web3Signer one, for an
+	// SSV node in remote signing mode (SSV_SIGNER_ENDPOINT): its share
+	// list, sign, operator identity and operator sign, from signers of
+	// signing_mode = dv_share that hold the operator key (server/ssv.go).
+	SSVAPI bool `yaml:"ssv_api"`
 }
 
 // Load reads and checks a config file. Relative paths resolve against the file's directory.

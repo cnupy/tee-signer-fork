@@ -126,3 +126,22 @@ A signer that holds Charon shares as whole keys under `signing_mode = single` si
 5. `signer-admin import -cluster cluster.json -signer NAME -order import.signed -commitments split.json -shares FILE [-interchange FILE]`, with the shares file of the single-mode import.
 
 Each key starts with the restart floor of the import, so the signer misses the duties of a restart.
+
+## SSV operators (signing_mode = dv_share)
+
+A dv_share signer can also hold one SSV operator's shares and serve the operator's SSV node through the gateway's ssv-signer API (`ssv_api: true` in the gateway config; the node sets `SSVSigner.Endpoint` and no operator key). The SSV network encrypts each share to the operator's RSA key on chain, so that key goes into the signer as well and never sits on the node's host.
+
+1. A setup with `signing_mode = dv_share`, as for Charon shares.
+2. On the offline admin machine, from the keyshares file (ssv-keys or SSV DKG) and the operator key (ssv-node's encrypted keystore with `-password-file`, its base64 PEM, or PEM):
+
+   ```
+   signer-admin ssv-split -keyshares keyshares.json -operator-id ID -operator-key FILE -signer NAME -out split.json -shares DIR/shares.txt
+   ```
+
+   For each validator of the operator, ssv-split computes the commitments from the first t share keys (an SSV share's x coordinate is its operator ID; t is 3 of 4, 5 of 7, 7 of 10, 9 of 13), checks that commitment 0 is the validator key and every share key is their value at its operator ID, decrypts the operator's share and checks it against its share key. The approvers check each validator key as for Charon shares: it is on chain under this operator's cluster. The shares file holds secrets: `DIR` is a new tmpfs folder, swap is off (or `-allow-swap`), and the file is deleted after the import, as in "Splitting existing keys" (steps 5 and 6).
+3. `import-draft`, approvals, `assemble` and `import -order import.signed -commitments split.json -shares shares.txt`, as above.
+4. `signer-admin ssv-operator-key -cluster cluster.json -signer NAME -operator-key FILE` seals the operator key to the signer, which refuses another while it holds one. It prints the public key, which must be the one registered for the operator ID. Keep the operator key offline afterwards, as you keep validator keys: the signer never gives it out, and each later `ssv-split` (a new validator of this operator) decrypts that validator's share with it.
+
+The node adds shares as it syncs ValidatorAdded events. The gateway answers "duplicate" for a share the signer holds, and 503 for one it does not: the node then stops and retries until an admin has imported it. Import a new validator's share before the validator is registered, and keep the operator private (a whitelist of owner addresses): anyone can register a validator with a public operator, and a share no admin can import would stop the node for good. A removed share stays in the signer until an admin removes it. `/v1/operator/encrypt` and `/decrypt` are not served, so the node keeps its p2p key unencrypted, as with ssv-signer releases before them.
+
+The operator ID is the share index of the split file and of the import order (`show` prints it as `share_index`), whatever its size. A dv_share runner takes an index above n; a threshold runner does not.

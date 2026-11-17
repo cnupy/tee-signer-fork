@@ -347,6 +347,26 @@ func TestSyncSelectionProofKeepsSubcommitteeIndex(t *testing.T) {
 	if _, err := Parse(bad, chain); err == nil {
 		t.Fatal("missing subcommittee_index accepted")
 	}
+	// The SSV node sends the index as a JSON number: same root as the string.
+	num := []byte(`{"type":"SYNC_COMMITTEE_SELECTION_PROOF","fork_info":` + forkInfo +
+		`,"sync_aggregator_selection_data":{"slot":"64","subcommittee_index":2}}`)
+	job, err := Parse(num, chain)
+	if err != nil {
+		t.Fatalf("numeric subcommittee_index: %v", err)
+	}
+	str := []byte(`{"type":"SYNC_COMMITTEE_SELECTION_PROOF","fork_info":` + forkInfo +
+		`,"sync_aggregator_selection_data":{"slot":"64","subcommittee_index":"2"}}`)
+	want, _ := Parse(str, chain)
+	if job.SigningRoot != want.SigningRoot {
+		t.Fatal("a numeric subcommittee_index signs another root than the string")
+	}
+	for _, v := range []string{`-1`, `1.5`, `true`, `null`} {
+		b := []byte(`{"type":"SYNC_COMMITTEE_SELECTION_PROOF","fork_info":` + forkInfo +
+			`,"sync_aggregator_selection_data":{"slot":"64","subcommittee_index":` + v + `}}`)
+		if _, err := Parse(b, chain); err == nil {
+			t.Fatalf("subcommittee_index %s accepted", v)
+		}
+	}
 }
 
 // The Web3Signer Gloas examples parse with Gloas at genesis: the PTC vote,

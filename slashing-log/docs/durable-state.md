@@ -26,6 +26,7 @@ The platform store (`-state-dir`) holds, by prefix:
 | --- | --- | --- |
 | `sealing/` | the sealing data key, wrapped by key release (Azure: RSA-OAEP to the released Key Vault key; GCP: Cloud KMS) | yes |
 | `shares/` | the sealed shares | yes |
+| `operator/` | the sealed SSV operator key of a `dv_share` runner | yes |
 | `mark-hint/` | the mark log's hint, written with every record | no |
 | `rr/` | repeat roots of builds with `-persist-repeat-root` (removed); never read, can be deleted | no |
 | `wm/` | persisted marks (not used with the mark log) | no |

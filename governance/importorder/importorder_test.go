@@ -89,7 +89,6 @@ func TestStrict(t *testing.T) {
 		"2t = n":       func(b *Body) { b.T, b.N = 2, 4 },
 		"t > n":        func(b *Body) { b.T = 5 },
 		"index 0":      func(b *Body) { b.ShareIndex = 0 },
-		"index > n":    func(b *Body) { b.ShareIndex = 5 },
 		"no validator": func(b *Body) { b.Validators = nil },
 		"twice":        func(b *Body) { b.Validators[1].Pubkey = b.Validators[0].Pubkey },
 		"no cluster":   func(b *Body) { b.ClusterID = [32]byte{} },
@@ -102,6 +101,13 @@ func TestStrict(t *testing.T) {
 		if _, err := c.Encode(); err == nil {
 			t.Errorf("%s: encoded", name)
 		}
+	}
+	// An index above n encodes: an SSV share's index is its operator ID.
+	// The runner takes one only under signing_mode = dv_share (checkSplit).
+	c := o.Body
+	c.ShareIndex = 5
+	if _, err := c.Encode(); err != nil {
+		t.Errorf("index > n: %v", err)
 	}
 	for name, r := range map[string][]byte{
 		"trailing":  append(append([]byte{}, raw...), 0),
@@ -172,5 +178,40 @@ func TestMatchesValidity(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v, want a refusal with %q", c.name, err, c.want)
 		}
+	}
+}
+
+// The share index is a u64: an SSV share's index is its operator ID,
+// often above 255.
+func TestShareIndexU64(t *testing.T) {
+	o, _ := sample(t)
+	for _, index := range []uint64{2, 255, 256, 1043, 1 << 40} {
+		b := o.Body
+		b.ShareIndex = index
+		raw, err := b.Encode()
+		if err != nil {
+			t.Fatalf("index %d: %v", index, err)
+		}
+		got, err := DecodeBody(raw)
+		if err != nil || got.ShareIndex != index || got.T != 3 || got.N != 4 || len(got.Validators) != 2 {
+			t.Fatalf("index %d: decode %+v, %v", index, got, err)
+		}
+		so := &Order{Body: b}
+		for _, id := range []byte{1, 2} {
+			so.Approvals = append(so.Approvals, setupwire.Approval{Position: id - 1, Signature: SignBody(approver(id), raw)})
+		}
+		enc, err := so.Encode()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if back, err := Decode(enc); err != nil || back.Body.ShareIndex != index {
+			t.Fatalf("index %d: order decode: %v", index, err)
+		}
+	}
+	// A version 1 body (a byte for the index) is refused.
+	raw, _ := o.Body.Encode()
+	raw[1] = 1
+	if _, err := DecodeBody(raw); err == nil {
+		t.Fatal("a version 1 body decoded")
 	}
 }

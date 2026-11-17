@@ -27,6 +27,11 @@ const (
 	// TypeImportBatch loads many shares encrypted to the import key under
 	// one import order (IMPORT_SHARES_SEALED).
 	TypeImportBatch wire.MsgType = 0x0a
+	// TypeImportOperatorKey loads the SSV operator's RSA private key
+	// (PKCS #1 DER) encrypted to the import key
+	// (IMPORT_OPERATOR_KEY_SEALED). A dv_share runner takes one, once;
+	// the answer is its public key (PKIX DER).
+	TypeImportOperatorKey wire.MsgType = 0x0d
 )
 
 // readVersion checks the version byte an answer starts with and returns
@@ -137,7 +142,7 @@ const MaxImportOrder = 128 << 10
 
 // EncodeImportSealed: header sealed_len:u16 sealed, then, if the request
 // has an import order, order_len:u32 order and, if it names the split,
-// t:u8 n:u8 share_index:u8 commitments[48*t]. A request without an order
+// t:u8 n:u8 share_index:u64 commitments[48*t]. A request without an order
 // is for a runner without a setup; a runner with a setup refuses it.
 func EncodeImportSealed(req *backend.SealedImportRequest) ([]byte, error) {
 	if len(req.Sealed) > MaxSealed {
@@ -156,7 +161,8 @@ func EncodeImportSealed(req *backend.SealedImportRequest) ([]byte, error) {
 			if len(req.Commitments) != int(req.T) {
 				return nil, errors.New("wire: import split: want t commitments")
 			}
-			p = append(p, req.T, req.N, req.ShareIndex)
+			p = append(p, req.T, req.N)
+			p = binary.BigEndian.AppendUint64(p, req.ShareIndex)
 			for _, c := range req.Commitments {
 				p = append(p, c[:]...)
 			}
@@ -212,13 +218,13 @@ func DecodeImportSealed(p []byte) (backend.SealedImportRequest, error) {
 	if len(rest) == 0 {
 		return req, nil
 	}
-	if len(rest) < 3 || rest[0] == 0 || len(rest) != 3+48*int(rest[0]) {
+	if len(rest) < 10 || rest[0] == 0 || len(rest) != 10+48*int(rest[0]) {
 		return req, errors.New("wire: IMPORT_SHARE_SEALED: import split length mismatch")
 	}
-	req.T, req.N, req.ShareIndex = rest[0], rest[1], rest[2]
+	req.T, req.N, req.ShareIndex = rest[0], rest[1], binary.BigEndian.Uint64(rest[2:])
 	for i := range int(req.T) {
 		var c backend.Pubkey
-		copy(c[:], rest[3+48*i:])
+		copy(c[:], rest[10+48*i:])
 		req.Commitments = append(req.Commitments, c)
 	}
 	return req, nil
@@ -226,8 +232,9 @@ func DecodeImportSealed(p []byte) (backend.SealedImportRequest, error) {
 
 // ---- IMPORT_SHARES_SEALED ------------------------------------------------
 
-// BatchVersion is the version byte IMPORT_SHARES_SEALED starts with.
-const BatchVersion = 1
+// BatchVersion is the version byte IMPORT_SHARES_SEALED starts with
+// (version 1 had a byte for the share index).
+const BatchVersion = 2
 
 // MaxBatch bounds the shares of one IMPORT_SHARES_SEALED. The frame
 // (wire.MaxFrame) bounds its bytes too: BatchLen and BatchShareLen size it.
@@ -240,14 +247,14 @@ func BatchLen(order []byte) int { return 1 + 4 + len(order) + 2 }
 func BatchShareLen(req *backend.SealedImportRequest) int {
 	n := SealedHeaderLen + 2 + len(req.Sealed) + 1
 	if req.T > 0 {
-		n += 2 + 48*int(req.T)
+		n += 1 + 8 + 48*int(req.T)
 	}
 	return n
 }
 
 // EncodeImportBatch is IMPORT_SHARES_SEALED: version:u8 order_len:u32
 // order count:u16, then per share its header, sealed_len:u16 sealed and
-// t:u8, and if t > 0 n:u8 share_index:u8 commitments[48*t]. Every share
+// t:u8, and if t > 0 n:u8 share_index:u64 commitments[48*t]. Every share
 // goes under the one order; each request's Order is ignored. An empty
 // order is for a runner without a setup.
 func EncodeImportBatch(order []byte, reqs []backend.SealedImportRequest) ([]byte, error) {
@@ -266,7 +273,8 @@ func EncodeImportBatch(order []byte, reqs []backend.SealedImportRequest) ([]byte
 		p = binary.BigEndian.AppendUint16(p, uint16(len(r.Sealed)))
 		p = append(append(p, r.Sealed...), r.T)
 		if r.T > 0 {
-			p = append(p, r.N, r.ShareIndex)
+			p = append(p, r.N)
+			p = binary.BigEndian.AppendUint64(p, r.ShareIndex)
 			for _, c := range r.Commitments {
 				p = append(p, c[:]...)
 			}
@@ -305,15 +313,16 @@ func DecodeImportBatch(p []byte) ([]backend.SealedImportRequest, error) {
 			return nil, bad(fmt.Sprintf("share %d: %v", i, err))
 		}
 		t := int(rest[0])
-		if t > 0 && (order == nil || len(rest) < 3+48*t) {
+		if t > 0 && (order == nil || len(rest) < 10+48*t) {
 			return nil, bad(fmt.Sprintf("share %d: split length mismatch or split without an import order", i))
 		}
 		if t > 0 {
-			r.T, r.N, r.ShareIndex = rest[0], rest[1], rest[2]
+			r.T, r.N, r.ShareIndex = rest[0], rest[1], binary.BigEndian.Uint64(rest[2:])
 			for j := range t {
-				r.Commitments = append(r.Commitments, backend.Pubkey(rest[3+48*j:3+48*(j+1)]))
+				o := 10 + 48*j
+				r.Commitments = append(r.Commitments, backend.Pubkey(rest[o:o+48]))
 			}
-			rest = rest[2+48*t:]
+			rest = rest[9+48*t:]
 		}
 		r.Order, rest = order, rest[1:]
 	}

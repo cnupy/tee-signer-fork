@@ -110,16 +110,32 @@ func CheckMembers(mode SigningMode, members int) error {
 // so two signing sets of t may share no runner, which breaks the overlap
 // that CheckThreshold counts on; in a 1 of 1 split both hold the whole
 // key.
-func CheckShareIndices(n int, shares map[string]uint8) error {
+func CheckShareIndices(n int, shares map[string]uint64) error {
+	return checkShareIndices(shares, uint64(n), false)
+}
+
+// CheckDVShareIndices is CheckShareIndices for a dv_share split, whose
+// indices may be above n: an SSV share's index is its operator ID. Each is
+// at least 1, and no two signers have the same one.
+func CheckDVShareIndices(shares map[string]uint64) error {
+	return checkShareIndices(shares, 0, true)
+}
+
+// checkShareIndices checks that each index is 1 to n (1 or more with
+// aboveN) and that no two signers have the same one.
+func checkShareIndices(shares map[string]uint64, n uint64, aboveN bool) error {
 	names := make([]string, 0, len(shares))
 	for name := range shares {
 		names = append(names, name)
 	}
 	slices.Sort(names)
-	by := map[uint8]string{}
+	by := map[uint64]string{}
 	for _, name := range names {
 		i := shares[name]
-		if i < 1 || int(i) > n {
+		switch {
+		case i < 1 && aboveN:
+			return fmt.Errorf("%s: share index 0, want 1 or more", name)
+		case i < 1 || !aboveN && i > n:
 			return fmt.Errorf("%s: share index %d, want 1 to %d", name, i, n)
 		}
 		if other, ok := by[i]; ok {

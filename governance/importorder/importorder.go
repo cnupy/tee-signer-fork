@@ -8,15 +8,17 @@
 // Fixed binary form, strict decoder, signatures over the body, verified
 // against the approver set in force.
 //
-//	body   = 'I' version:u8(1) cluster_id[32] chain_hash[32]
+//	body   = 'I' version:u8(2) cluster_id[32] chain_hash[32]
 //	         target_setup_hash[32] not_after:u64
-//	         t:u8 n:u8 share_index:u8 count:u16 {validator_pubkey[48] commitments_hash[32]}
-//	order  = 'J' version:u8(1) body_len:u32 body
+//	         t:u8 n:u8 share_index:u64 count:u16 {validator_pubkey[48] commitments_hash[32]}
+//	order  = 'J' version:u8(2) body_len:u32 body
 //	         sig_count:u8 {position:u8 signature[64]}
 //
 // Integers are big endian. share_index is the target signer's x
-// coordinate in the split (1 to n). commitments_hash is CommitmentsHash of
-// the validator's t commitments; commitment 0 is the validator key.
+// coordinate in the split: 1 to n for a split made here or by Charon, the
+// operator ID for an SSV share, which may be larger (version 1 had a byte
+// for it). commitments_hash is CommitmentsHash of the validator's t
+// commitments; commitment 0 is the validator key.
 //
 // The order's hash is SHA-256 over CtxImportOrder and the body.
 package importorder
@@ -33,12 +35,12 @@ import (
 )
 
 const (
-	Version = 1
+	Version = 2
 	// MaxValidators bounds the validators of one order.
 	MaxValidators = 1024
 	// MaxSize bounds a signed order: MaxValidators entries and eight
 	// signatures.
-	MaxSize = 2 + 4 + 2 + 32*3 + 8 + 5 + MaxValidators*(48+32) + 1 + setupwire.MaxApprovers*65
+	MaxSize = 2 + 4 + 2 + 32*3 + 8 + 12 + MaxValidators*(48+32) + 1 + setupwire.MaxApprovers*65
 	// MaxValidity caps an order's life, in seconds: the runner refuses an
 	// order whose not_after is more than this past the trusted time
 	// (Body.Matches). A far not_after would be a standing permission to
@@ -62,9 +64,11 @@ type Body struct {
 	Target    [32]byte // setup_hash of the runner that takes the shares
 	// NotAfter, Unix seconds: from then on the runner takes no share under
 	// the order.
-	NotAfter   uint64
-	T, N       uint8
-	ShareIndex uint8
+	NotAfter uint64
+	T, N     uint8
+	// ShareIndex is the target's x coordinate: 1 to n, or an SSV operator
+	// ID. The runner takes one above n only under signing_mode = dv_share.
+	ShareIndex uint64
 	Validators []Entry
 }
 
@@ -99,8 +103,8 @@ func (b *Body) Check() error {
 		return fmt.Errorf("import order: threshold %d of %d, want 1 to n", b.T, b.N)
 	case 2*int(b.T) <= int(b.N):
 		return fmt.Errorf("import order: threshold %d of %d, want more than half", b.T, b.N)
-	case b.ShareIndex < 1 || b.ShareIndex > b.N:
-		return fmt.Errorf("import order: share index %d, want 1 to %d", b.ShareIndex, b.N)
+	case b.ShareIndex < 1:
+		return errors.New("import order: share index 0, want 1 or more")
 	case len(b.Validators) < 1 || len(b.Validators) > MaxValidators:
 		return fmt.Errorf("import order: %d validators, want 1 to %d", len(b.Validators), MaxValidators)
 	}
@@ -127,7 +131,8 @@ func (b *Body) Encode() ([]byte, error) {
 	p = append(p, b.ChainHash[:]...)
 	p = append(p, b.Target[:]...)
 	p = binary.BigEndian.AppendUint64(p, b.NotAfter)
-	p = append(p, b.T, b.N, b.ShareIndex)
+	p = append(p, b.T, b.N)
+	p = binary.BigEndian.AppendUint64(p, b.ShareIndex)
 	p = binary.BigEndian.AppendUint16(p, uint16(len(b.Validators)))
 	for _, v := range b.Validators {
 		p = append(p, v.Pubkey[:]...)
@@ -161,7 +166,7 @@ func DecodeBody(raw []byte) (*Body, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(p) < 32*3+8+3+2 {
+	if len(p) < 32*3+8+2+8+2 {
 		return nil, errShort
 	}
 	b := &Body{}
@@ -169,9 +174,10 @@ func DecodeBody(raw []byte) (*Body, error) {
 	copy(b.ChainHash[:], p[32:])
 	copy(b.Target[:], p[64:])
 	b.NotAfter = binary.BigEndian.Uint64(p[96:])
-	b.T, b.N, b.ShareIndex = p[104], p[105], p[106]
-	count := int(binary.BigEndian.Uint16(p[107:]))
-	p = p[109:]
+	b.T, b.N = p[104], p[105]
+	b.ShareIndex = binary.BigEndian.Uint64(p[106:])
+	count := int(binary.BigEndian.Uint16(p[114:]))
+	p = p[116:]
 	if count > MaxValidators || len(p) != count*(48+32) {
 		return nil, fmt.Errorf("importorder: %d validators in %d bytes", count, len(p))
 	}

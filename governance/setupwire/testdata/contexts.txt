@@ -33,3 +33,5 @@ signer-config-update-hash-v1
 signer-handover-order-hash-v1
 signer-import-order-hash-v1
 signer-handover-carry-v1
+signer-operator-key-v1
+signer-operator-key-import-v1
