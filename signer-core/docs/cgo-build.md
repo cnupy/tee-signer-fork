@@ -6,6 +6,20 @@ folder of this repo. `scripts/build-core.sh` builds it. The script copies `inclu
 and the sha256 of each file), and builds `libsigner_core.a` and `libblst.a`
 per arch into `build/<arch>/lib/`. `signer-core/core` links them with cgo.
 
+`DVT=1 scripts/build-core.sh` (`make core DVT=1`) builds the DVT core
+instead: the same sources compiled with `-DSC_DVT`, which adds
+`sc_signer_add_validator_group` and the group key rules of a distributed
+validator share (`signer_core.h`), into `libsigner_core_dvt.a`. A Go
+build with the tag `dvt` links that library (`core/dvt.go`), the default
+build `libsigner_core.a` (`core/corelib.go`). Only `core/dvt.go` declares
+the DVT function, so a dvt build against a default core fails at link
+time. The other way, the DVT core and `core/corelib.go` both define
+`sc_core_dvt_marker`, so a default build against a DVT core fails with a
+multiple definition (both in `scripts/dvt-test.sh link`). After each
+archive `build-core.sh` checks with `nm` that it matches its variant: the
+two DVT symbols in the DVT core only. The default core has no DVT code: its
+validator struct and functions are those of the core before DVT support.
+
 `sc_sign_root` signs an object root for the six message
 types that need no slashing protection (RANDAO, selection proof, aggregate
 and proof, sync committee message, sync committee selection proof,

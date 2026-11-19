@@ -31,8 +31,12 @@ func batchKeys(t *testing.T, n int) (sks [][32]byte, pks []backend.Pubkey) {
 
 // batchPayload is an IMPORT_SHARES_SEALED payload of the keys under one
 // import order that names them all; corrupt, if set, changes request i.
+// Under signing_mode = dv_share it is dvBatchPayload's.
 func (e *tgtEnv) batchPayload(sks [][32]byte, pks []backend.Pubkey, corrupt func(i int, r *backend.SealedImportRequest)) []byte {
 	e.t.Helper()
+	if e.setup.SigningMode == setupwire.SigningModeDVShare {
+		return e.dvBatchPayload(sks, pks, corrupt)
+	}
 	order := e.importOrder([]byte{1, 2}, pks[0], func(b *importorder.Body) {
 		b.Validators = nil
 		for i, pk := range pks {
@@ -132,7 +136,7 @@ func (e *tgtEnv) wantBefore(what string, pka, pkb backend.Pubkey, floor uint64, 
 // A batch writes one log record, its keys load, and a start loads the set
 // after it as it is.
 func TestBatchOneLogRecord(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	pka, pkb, floor := keyPair(t, e)
 	sks, pks := batchKeys(t, 5)
 	n := len(e.records())
@@ -166,7 +170,7 @@ func TestBatchOneLogRecord(t *testing.T) {
 // A batch with one bad share is refused before anything is written: no
 // log record, no store write, no key.
 func TestBatchRefusedWritesNothing(t *testing.T) {
-	e := newTgtEnv(t, "dev", func(s *setupwire.Setup) { s.MaxKeys = 6 })
+	e := newVariantEnv(t, "dev", func(s *setupwire.Setup) { s.MaxKeys = 6 })
 	sk, pk := newKey(t)
 	if err := e.importSealed(pk, sk, 5, nil); err != nil {
 		t.Fatal(err)
@@ -212,7 +216,7 @@ func TestBatchRefusedWritesNothing(t *testing.T) {
 // A key whose record is in the set is refused in a batch; it goes in on
 // its own.
 func TestBatchRefusesHeldKey(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	e.looseLoad = true
 	sk, pk := newKey(t)
 	if err := e.importSealed(pk, sk, 5, nil); err != nil {
@@ -237,7 +241,7 @@ func TestBatchRefusesHeldKey(t *testing.T) {
 // with no reset, also with the record the host kept stored later.
 func TestBatchWriteFails(t *testing.T) {
 	t.Run("landed", func(t *testing.T) {
-		e := newTgtEnv(t, "dev", nil)
+		e := newVariantEnv(t, "dev", nil)
 		pka, pkb, floor := keyPair(t, e)
 		sks, pks := batchKeys(t, 4)
 		e.store.mu.Lock()
@@ -255,7 +259,7 @@ func TestBatchWriteFails(t *testing.T) {
 		e.wantLoaded("start", pks, true)
 	})
 	t.Run("not landed", func(t *testing.T) {
-		e := newTgtEnv(t, "dev", nil)
+		e := newVariantEnv(t, "dev", nil)
 		pka, pkb, floor := keyPair(t, e)
 		sks, pks := batchKeys(t, 4)
 		e.failPuts(pks[2])
@@ -303,7 +307,7 @@ func TestBatchWriteFails(t *testing.T) {
 func TestBatchCut(t *testing.T) {
 	for _, landed := range []int{0, 3, 6} {
 		t.Run(strconv.Itoa(landed), func(t *testing.T) {
-			e := newTgtEnv(t, "dev", nil)
+			e := newVariantEnv(t, "dev", nil)
 			pka, pkb, floor := keyPair(t, e)
 			sks, pks := batchKeys(t, 6)
 			e.failPuts(pks[landed:]...)
@@ -348,7 +352,7 @@ func TestBatchCut(t *testing.T) {
 // A key of a failed batch imported on its own leaves the batch: a later
 // batch need not hold it, and starts load it.
 func TestBatchCutKeyAlone(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	sks, pks := batchKeys(t, 3)
 	e.failPuts(pks[2])
 	if _, err := e.importBatch(sks, pks); err == nil {
@@ -370,7 +374,7 @@ func TestBatchCutKeyAlone(t *testing.T) {
 
 // An empty batch writes nothing and answers no key: a sender's probe.
 func TestBatchEmptyProbe(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	p, _ := wireadmin.EncodeImportBatch(nil, nil)
 	n := len(e.records())
 	b, err := e.srv.dispatch(ctx, wire.Frame{Type: wireadmin.TypeImportBatch, Payload: p})
@@ -436,7 +440,7 @@ func TestImportBatchTiming(t *testing.T) {
 // store holds records of both tries. The second try takes the first's tag,
 // so a start leaves both out and loads the set before as it is.
 func TestBatchFailsTwice(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	pka, pkb, floor := keyPair(t, e)
 	sks, pks := batchKeys(t, 4)
 	for _, fail := range []backend.Pubkey{pks[3], pks[0]} {

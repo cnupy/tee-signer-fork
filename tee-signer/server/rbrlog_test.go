@@ -17,7 +17,7 @@ import (
 // registrations under its old fee recipient list). It stays up and HEALTH
 // says why.
 func TestRBRLOG03LostRunnerSignsNothing(t *testing.T) {
-	a := newTgtEnv(t, "dev", nil)
+	a := newVariantEnv(t, "dev", nil)
 	sk, pk := newKey(t)
 	if err := a.importSealed(pk, sk, 5, nil); err != nil {
 		t.Fatal(err)

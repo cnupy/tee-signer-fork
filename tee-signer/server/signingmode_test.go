@@ -163,6 +163,8 @@ func pubkeyOfScalar(t *testing.T, x *big.Int) backend.Pubkey {
 // threshold-mode runner refuses both: checkSplit refuses the point at
 // infinity and a share equal to the validator key in a split with n >= 2,
 // and checkWholeKey refuses a share whose public key is the validator key.
+// A dv_share runner (the dvt build) takes splits the same way and refuses
+// both too.
 func TestImportDegenerateSplit(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "governance", "setupwire", "testdata", "setup-gcp.bin"))
 	if err != nil {
@@ -193,7 +195,7 @@ func TestImportDegenerateSplit(t *testing.T) {
 			if c.gcp {
 				change = func(s *setupwire.Setup) { s.Platform = gcp.Platform }
 			}
-			e := newShareTgtEnv(t, "dev", change)
+			e := newVariantShareEnv(t, "dev", change)
 			sk, pk := newKey(t)
 			commitments := c.commits(pk)
 			if got, err := threshold.FeldmanEval(commitments, 2); err != nil || got != pk {

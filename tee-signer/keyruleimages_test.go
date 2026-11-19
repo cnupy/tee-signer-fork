@@ -23,7 +23,7 @@ import (
 // config in force is read as main.go does before the share checks.
 func keyRuleEnv(t *testing.T, change func(*markstore.ConfigState)) (*server.Updates, *platform.Platform) {
 	t.Helper()
-	st, err := setup.Load(testdata(t, "setup-nitro.bin"), "nitro")
+	st, err := setup.Load(sampleSetup(t, "nitro"), "nitro")
 	if err != nil {
 		t.Fatal(err)
 	}

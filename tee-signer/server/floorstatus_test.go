@@ -57,7 +57,7 @@ func wantConflict(t *testing.T, err error, what string) {
 // core's gives the core a floor one epoch higher; a message that floor
 // alone refuses is still a floor refusal, and above it the key signs.
 func TestFloorStatusEpochStartsDuringImport(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	f := e.floorOf()
 	// A first key: the device mark and its floor come in with it.
 	skA, pkA := newKey(t)
@@ -91,7 +91,7 @@ func TestFloorStatusEpochStartsDuringImport(t *testing.T) {
 // messages at or below them. Once the key votes, a vote that surrounds
 // that vote is a slashing refusal, though the source floor refuses it too.
 func TestFloorStatusAfterImport(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	now, f := e.signer.EpochAt(e.now()), e.floorOf()
 	sk, pk := newKey(t)
 	if err := e.importSealed(pk, sk, 5, nil); err != nil {
@@ -127,7 +127,7 @@ func TestFloorStatusAfterImport(t *testing.T) {
 // the mark log's mark, one for all keys: the same conflict is then
 // FLOOR_UNPROVEN, still refused.
 func TestFloorStatusKeepsHistoryConflicts(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	now, f := e.signer.EpochAt(e.now()), e.floorOf()
 	hist := &backend.Watermark{HasAttestation: true, SourceEpoch: now - 3, TargetEpoch: now - 2, HasBlock: true, BlockSlot: (now - 2) * 8}
 	sk, pk := newKey(t)
@@ -163,7 +163,7 @@ func TestFloorStatusKeepsHistoryConflicts(t *testing.T) {
 // vote) and for a key that did not vote then; a vote above the mark, below
 // the floor, is FLOOR. All stay refused.
 func TestFloorStatusAfterRestart(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	now, f := e.signer.EpochAt(e.now()), e.floorOf()
 	sk, pk := newKey(t)
 	if err := e.importSealed(pk, sk, 5, nil); err != nil {
@@ -203,7 +203,7 @@ func TestFloorStatusAfterRestart(t *testing.T) {
 // since the load for the server, but the server counts it as in the core:
 // a vote that surrounds it is no floor refusal.
 func TestFloorStatusVoteInTheCore(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	now, f := e.signer.EpochAt(e.now()), e.floorOf()
 	sk, pk := newKey(t)
 	if err := e.importSealed(pk, sk, 5, nil); err != nil {
@@ -237,7 +237,7 @@ func TestFloorStatusVoteInTheCore(t *testing.T) {
 // of a signed vote and an honest vote the key never signed, both under
 // the stored mark, are FLOOR_UNPROVEN, refused; not a slashing code.
 func TestFloorStatusPersistedRecord(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	cfg := baseConfig(e.setup)
 	sk, pk := newKey(t)
 	start := func() *Server {

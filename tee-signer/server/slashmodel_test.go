@@ -44,7 +44,10 @@ import (
 //
 // FuzzSlashingModel takes the operations as bytes; TestSlashingModel runs
 // seeded sequences (SLASHMODEL_SEED picks one seed, SLASHMODEL_RUNS the
-// number of seeds, SLASHMODEL_OPS the length).
+// number of seeds, SLASHMODEL_OPS the length). The runners run the key
+// mode of the build (newVariantEnv): single in the default build, dv_share
+// in the dvt build, where each imported key is a share of a split and
+// carries its group key.
 
 // faultLog makes the next Create fail before it applies (failNext) or
 // apply and then fail (dropNext), as wormfake's fault plan does over HTTP.
@@ -206,7 +209,7 @@ func (o *oracle) block(pk backend.Pubkey, slot uint64, root byte) error {
 // runModel runs ops (one byte each, with argument bytes) and fails t on a
 // violation of the oracle, with a trace of the operations.
 func runModel(t *testing.T, ops []byte) (signed int) {
-	base := newTgtEnv(t, "dev", nil)
+	base := newVariantEnv(t, "dev", nil)
 	base.signer.Close() // the model starts its own runners on the same state
 	const spe = 8
 	e0 := base.signer.EpochAt(base.now())
@@ -343,6 +346,7 @@ func runModel(t *testing.T, ops []byte) (signed int) {
 		if err != nil {
 			return
 		}
+		r.e.wantGroupKey(pk)
 		keys = append(keys, k)
 		keyFloor[pk] = r.e.floorOf() // the first load applies the floor too
 		if err := o.vote(pk, modelVote{source: pre.SourceEpoch, target: pre.TargetEpoch, root: 0xff, who: "pre-history"}); err != nil {

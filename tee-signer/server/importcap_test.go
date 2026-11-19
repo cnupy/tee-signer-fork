@@ -52,7 +52,7 @@ type testKey struct {
 // imports' errors.
 func lastSlotRace(t *testing.T) (*tgtEnv, testKey, []error) {
 	t.Helper()
-	e := newTgtEnv(t, "dev", func(s *setupwire.Setup) { s.MaxKeys = 2 })
+	e := newVariantEnv(t, "dev", func(s *setupwire.Setup) { s.MaxKeys = 2 })
 	var ks []testKey
 	for range 3 {
 		sk, pk := newKey(t)

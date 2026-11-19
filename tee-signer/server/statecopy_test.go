@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/lidofinance/tee-signer/signer-protocol"
 	"github.com/lidofinance/tee-signer/slashing-log"
 )
 
@@ -63,7 +64,7 @@ func (l *lostCommitLog) Get(ctx context.Context, e markstore.Entry) ([]byte, err
 // next import goes through, and a start loads every key, B with its
 // history.
 func TestShareWriteStateCopyLostReply(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	e.looseLoad = true
 	fl, err := markstore.NewFileLog(filepath.Join(e.dir, "copy"))
 	if err != nil {
@@ -90,5 +91,8 @@ func TestShareWriteStateCopyLostReply(t *testing.T) {
 	}
 	if !e.recordOf(pkb).History {
 		t.Fatal("B lost its history")
+	}
+	for _, pk := range []backend.Pubkey{pkb, pkc, pkd} {
+		e.wantGroupKey(pk) // dv_share keys in the dvt build
 	}
 }

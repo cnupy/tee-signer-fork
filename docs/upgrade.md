@@ -211,6 +211,18 @@ On Azure and GCP set a new `IMAGE_TAG` before `build-image.sh`, then run
 `deploy.sh image-push` with it, so the running image keeps its tag in the
 registry. On AWS the EIF goes to the parent instead (see "AWS").
 
+Image variants. A release has the default images and, built only on
+request (`DVT=1 release/release-build.sh`), the dvt images, whose names
+and measurement files carry `-dvt` (`build_variant dvt` in the
+fingerprints). Each variant runs its own signing modes only. A dvt image
+runs only a setup with `signing_mode = dv_share` and refuses a threshold
+or single setup at start ("this image is a DVT build and runs only
+dv_share setups"); a default image runs threshold and single setups and
+refuses dv_share. List the measurements of the variant the setup needs in
+`allowed_image_measurements`: a dvt measurement in a threshold or single
+setup leaves that signer with an image that does not start. HEALTH's
+`variant` shows which one runs.
+
 ### 2. Upgrade the client tools first
 
 Check the merged pull requests since your current build for wire or

@@ -150,6 +150,49 @@ expect scope-aws-tf-script "ALL|1|1|1|1|1" "$(scope aws-tf-script scripts/aws-tf
 expect scope-tf-validate "ALL|1|1|1|1|1" "$(scope tf-validate scripts/tf-validate.sh)"
 expect scope-workflow "ALL|1|1|1|1|1" "$(scope workflow .github/workflows/ci.yml)"
 
+# dvt <case> <file>...: the CI_DVT value ci-scope.sh prints for a change to
+# the files.
+dvt() {
+  local name="$1" f
+  shift
+  git -C "$tmp" checkout -q -b "dvt-$name" main
+  for f in "$@"; do
+    mkdir -p "$tmp/$(dirname "$f")"
+    echo "$name" >>"$tmp/$f"
+  done
+  git -C "$tmp" add -A
+  git -C "$tmp" commit -q -m "$name"
+  (cd "$tmp" && CI_ALL="${CI_ALL:-0}" GITHUB_EVENT_NAME="${GITHUB_EVENT_NAME:-}" bash scripts/ci-scope.sh main 2>/dev/null) |
+    sed -n 's/^CI_DVT=//p'
+  git -C "$tmp" checkout -q main
+}
+# CI_DVT: the dvt job runs for signer-core, the runner module (the dv_share
+# files and their callers: server.go, importorder.go, config.go, start.go),
+# signer-protocol, the import order, the setup format, the gateway, the
+# signer-admin dv-split, and the build, release and CI files of the
+# variants; not for their docs or other code.
+i=0
+for f in signer-core/src/signer.c signer-core/core/dvt.go signer-core/Makefile tee-signer/server/dvshare.go \
+  tee-signer/server/nodvt.go tee-signer/server/variant.go tee-signer/server/importbatch.go tee-signer/nodvt_test.go \
+  tee-signer/server/server.go tee-signer/server/importorder.go tee-signer/server/keyorigin.go \
+  tee-signer/server/config.go tee-signer/start.go tee-signer/setupstate.go signer-protocol/backend.go \
+  signer-protocol/wire/health.go governance/importorder/order.go governance/setupwire/threshold.go \
+  governance/setupwire/setupwire.go governance/setupwire/update.go gateway/internal/backend/signers.go \
+  signer-admin/cmd/signer-admin/dvsplit.go scripts/build-core.sh scripts/dvt-test.sh scripts/build-runner.sh \
+  scripts/build-runner-nts.sh scripts/generic-images.sh scripts/ci-scope.sh release/release-build.sh \
+  release/measurements.py Makefile .github/workflows/ci.yml; do
+  i=$((i + 1))
+  expect "scope-dvt-$f" 1 "$(dvt "on-$i" "$f")"
+done
+for f in README.md signer-core/README.md gateway/README.md tee-signer/docs/runner.md signer-protocol/docs/protocol.md \
+  release/README.md governance/runnerchain/chain.go slashing-log/marklog.go platform-aws/nitro.go signer-admin/x.go \
+  scripts/fuzz.sh; do
+  i=$((i + 1))
+  expect "scope-dvt-not-$f" 0 "$(dvt "off-$i" "$f")"
+done
+expect scope-dvt-push 1 "$(GITHUB_EVENT_NAME=push dvt push README.md)"
+expect scope-dvt-ci-all 1 "$(CI_ALL=1 dvt ci-all README.md)"
+
 if [ "$fails" -ne 0 ]; then
   echo "affected-test: $fails of $n cases failed" >&2
   exit 1

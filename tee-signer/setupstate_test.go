@@ -205,7 +205,7 @@ func testdata(t *testing.T, name string) []byte {
 // rotation the active update's version, hash and approver set; pending
 // updates (not yet due) and the order as the record carries them.
 func TestSetupState(t *testing.T) {
-	st, err := setup.Load(testdata(t, "setup-nitro.bin"), "nitro")
+	st, err := setup.Load(sampleSetup(t, "nitro"), "nitro")
 	if err != nil {
 		t.Fatal(err)
 	}

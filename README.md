@@ -68,6 +68,25 @@ default Docker builder with `exporter option "rewrite-timestamp" conflicts
 with "unpack"`. A docker-container builder works:
 `docker buildx create --use --driver docker-container`.
 
+### Image variants
+
+The default build holds the signing modes `threshold` and `single`. Signing
+mode `dv_share` (one share of each validator of an Obol Charon cluster)
+needs the dvt variant: the runners built with the Go build tag `dvt` and
+linked against the core built with `SC_DVT`. Each variant runs its own
+modes only: a default image refuses a `dv_share` setup at start, and a
+dvt image refuses a `threshold` or `single` setup, so the DVT core never
+holds those keys. HEALTH's `variant` says which one runs.
+
+```sh
+make core DVT=1    # the DVT core, build/<arch>/lib/libsigner_core_dvt.a
+make build DVT=1   # the dvt runners: runner-aws-dvt, runner-azure-dvt, ...
+make test-dvt      # both cores, the link checks, the dvt Go tests, the DVT C suites
+```
+
+A release builds the dvt images only on request:
+`DVT=1 release/release-build.sh DIST`. Their names carry `-dvt`.
+
 To move a running cluster to a new image, see [docs/upgrade.md](docs/upgrade.md).
 
 ## Test

@@ -4,16 +4,19 @@
 #   RUNNER=qemu-aarch64     prefix for running cross-built test binaries
 #   NO_BUILD=1              skip make (scripts/cross-aarch64.sh builds first)
 #   FUZZ=0                  skip the short fuzz run (scripts/fuzz.sh ci)
+#   DVT=1                   the DVT build (make DVT=1, build/<arch>-dvt)
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 ARCH="${ARCH:-$HOST_ARCH}"
 RUNNER="${RUNNER:-}"
-BUILD="$CORE_DIR/build/$ARCH"
+DVT="${DVT:-0}"
+case "$DVT" in 0) BUILD="$CORE_DIR/build/$ARCH" ;; 1) BUILD="$CORE_DIR/build/$ARCH-dvt" ;; *) echo "DVT must be 0 or 1" >&2; exit 2 ;; esac
 LOGS="$BUILD/test-logs"
+export DVT
 
 if [ "${NO_BUILD:-0}" != 1 ]; then
-  make -C "$CORE_DIR" -j"$(nproc)" ARCH="$ARCH" all >/dev/null
+  make -C "$CORE_DIR" -j"$(nproc)" ARCH="$ARCH" DVT="$DVT" all >/dev/null
 fi
 for d in "$CST_SSZ_DIR" "$CST_BLS_DIR" "$SPIT_DIR/tests/generated"; do
   [ -d "$d" ] || { echo "missing $d; run scripts/fetch.sh" >&2; exit 1; }
@@ -33,8 +36,24 @@ run() {
   echo "$res $name ($ARCH${RUNNER:+ via $RUNNER}, log: ${LOGS#"$REPO_ROOT"/}/$name.log)"
 }
 
-run unit '^(UNIT|memory|clock |registration_go|gloas|commit-ahead|write counts|repeat after restart|non-finality restart|hash cache|restart property|device restart property|bench)' \
+run unit '^(UNIT|variant|memory|clock |registration_go|gloas|commit-ahead|write counts|repeat after restart|non-finality restart|hash cache|restart property|device restart property|bench)' \
   "$BUILD/test_unit" "$CORE_DIR/tests/data"
+# The build variant: the DVT entry point and its unit test only in a DVT
+# build (DVT=1, -DSC_DVT).
+want=default
+[ "$DVT" != 1 ] || want=dvt
+nm_tool="nm"
+[ "$ARCH" = "$HOST_ARCH" ] || nm_tool="$ARCH-linux-gnu-nm"
+got=default
+if "$nm_tool" --defined-only "$BUILD/libsigner_core.a" | awk '$2 == "T" { print $3 }' | grep -qx sc_signer_add_validator_group; then
+  got=dvt
+fi
+if [ "$got" = "$want" ] && grep -qx "variant $want" "$LOGS/unit.log"; then
+  echo "PASS variant $want ($ARCH)"
+else
+  echo "FAIL variant: want $want, the library is $got, the unit log says '$(grep '^variant' "$LOGS/unit.log" || true)'"
+  status=1
+fi
 run ssz_static '^SSZ_STATIC' "$BUILD/test_ssz_static" "$CST_SSZ_DIR"
 run bls_sign '^BLS_SIGN' "$BUILD/test_bls_sign" "$CST_BLS_DIR"
 # The converter must refuse a malformed vector: tests/data/eip3076-bad holds

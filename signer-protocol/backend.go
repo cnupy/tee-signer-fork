@@ -68,9 +68,15 @@ type Health struct {
 	Version  string `json:"version"`
 	// Protocol is the runner's ProtocolLevel. Runners before it leave it
 	// out; EffectiveProtocol reads that as level 1.
-	Protocol   int  `json:"protocol,omitempty"`
-	Ready      bool `json:"ready"`
-	Validators int  `json:"validators"`
+	Protocol int `json:"protocol,omitempty"`
+	// Variant is the runner build's variant: "default", or "dvt" for a
+	// build with the tag dvt, the only one that runs signing_mode =
+	// dv_share (docs/protocol.md, "Signing modes"). Unattested here: the
+	// image measurements tell the variants apart. Runners before it leave
+	// it out.
+	Variant    string `json:"variant,omitempty"`
+	Ready      bool   `json:"ready"`
+	Validators int    `json:"validators"`
 	// ConfigHash is the hash of the backend's config: Setup.SetupHash on a
 	// runner.
 	ConfigHash Root `json:"config_hash"`

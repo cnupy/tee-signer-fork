@@ -12,6 +12,11 @@
 #   scripts/generic-images.sh check FILE    compare the current build outputs
 #                                           with FILE, the recorded values
 #
+# DVT=1 (scripts/common.sh) builds the dvt images: runners with the tag dvt
+# and the DVT core, with "-dvt" after the chain's suffix in every name
+# (runner-aws-dvt, build/nitro-dvt, build/generic-dvt). Unset, the images
+# are the default variant. The fingerprints header names the variant.
+#
 # CHAIN (scripts/common.sh) picks the build: mainnet when unset. With
 # CHAIN=hoodi, devnet or ci-test both work on that chain's non-prod images
 # (signer-protocol/buildchain): the same code built with -tags
@@ -121,7 +126,7 @@ cmd_build() {
   {
     echo "# generic $(chain_is_prod "$CHAIN" || echo "$CHAIN ")images, built $(date -u +%Y-%m-%dT%H:%M:%SZ) from $(git -C "$ROOT" rev-parse --short HEAD)$([ -z "$(git -C "$ROOT" status --porcelain -- . ':!build' ':!logs')" ] || echo ' with local changes')"
     echo "# $(head -n 1 "$BUILD/core-src/SOURCE.txt")"
-    echo "# variant $IMAGE_VARIANT, builder ${SIGNER_BUILDER_IMAGE:-none (host toolchain)}"
+    echo "# variant $IMAGE_VARIANT, build variant $(variant), builder ${SIGNER_BUILDER_IMAGE:-none (host toolchain)}"
     echo "# go $(go env GOVERSION), nitro-cli $NITRO_CLI_TAG image $(docker image inspect "signer-cloud/nitro-cli:$NITRO_CLI_TAG-$HOST_ARCH" --format '{{.Id}}')$(devnet_hook generic_images_note)"
     fingerprints
   } >"$dir/fingerprints.txt"

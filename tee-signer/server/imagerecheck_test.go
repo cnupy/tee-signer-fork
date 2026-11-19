@@ -35,7 +35,7 @@ func TestImageRecheckedBeforeSign(t *testing.T) {
 // SETUP-IMAGE-01: a sealed import, single or batch, that passed
 // dispatch's image check stores no share once the image is not allowed.
 func TestImageRecheckedBeforeImport(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	g, err := NewImageGate(ctx, ImageGateOptions{Platform: "gcp", SelfImage: selfIs(testImage(setupwire.ImageGCP, 0x5e)), Log: quiet})
 	if err != nil {
 		t.Fatal(err)
@@ -43,7 +43,7 @@ func TestImageRecheckedBeforeImport(t *testing.T) {
 
 	sk, pk := newKey(t)
 	e.srv.Image = g
-	_, err = e.srv.addShare(pk, &sk, 5, nil, "sealed")
+	_, err = e.addShareOf(pk, &sk, 5, nil)
 	wantCode(t, err, backend.StatusNotReady, "image check")
 	sks, pks := batchKeys(t, 3)
 	_, err = e.srv.importBatch(e.batchPayload(sks, pks, nil))
@@ -57,7 +57,7 @@ func TestImageRecheckedBeforeImport(t *testing.T) {
 
 	// The same imports without the gate go through.
 	e.srv.Image = nil
-	if _, err := e.srv.addShare(pk, &sk, 5, nil, "sealed"); err != nil {
+	if _, err := e.addShareOf(pk, &sk, 5, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.srv.importBatch(e.batchPayload(sks, pks, nil)); err != nil {

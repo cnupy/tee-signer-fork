@@ -7,6 +7,10 @@ SHELL := /bin/bash
 ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 export PATH := /usr/local/go/bin:$(PATH)
 export GOWORK := off
+# DVT=1 builds the dvt variant (scripts/common.sh): make core DVT=1 builds
+# the DVT core, make build DVT=1 the dvt runners. Unset is the default.
+DVT ?= 0
+export DVT
 # Every go test runs under the race detector; make RACE= turns it off.
 RACE ?= -race
 export RACE
@@ -17,7 +21,7 @@ MODEL_RUNS ?= 500
 FUZZ_EVERYTHING := bash -c '. "$$1"; fuzz_everything' _ $(ROOT)/scripts/common.sh
 
 .DEFAULT_GOAL := help
-.PHONY: help deps check core nts build test test-modules e2e e2e-nonprod test-core test-rust fuzz fuzz-core model race release-gate loc clean
+.PHONY: help deps check core nts build test test-modules test-dvt e2e e2e-nonprod test-core test-rust fuzz fuzz-core model race release-gate loc clean
 
 help: ## list targets
 	@grep -E '^[a-z][a-z0-9-]+:.*## ' $(firstword $(MAKEFILE_LIST)) | \
@@ -41,7 +45,7 @@ check: ## guards: module boundaries, secret scan, release gate, eif-check, relea
 	@for m in */go.mod tooling/*/go.mod; do [ -f "$$m" ] || continue; d=$${m%/go.mod}; out=$$(cd $$d && gofmt -l . | grep -v '^third_party/' || true); \
 		[ -z "$$out" ] || { echo "gofmt: $$d: $$out"; exit 1; }; done; echo "gofmt: clean"
 
-core: ## the C signer core and the vendored blst, static libraries for cgo (build/<arch>/lib)
+core: ## the C signer core and the vendored blst, static libraries for cgo (build/<arch>/lib); DVT=1: the DVT core (libsigner_core_dvt.a)
 	bash $(ROOT)/scripts/build-core.sh
 
 nts: ## the Rust NTS library (trusted-time/rust) for both arches: crates fetched once (network), then checked and built offline in its toolchain image, with its tests
@@ -54,6 +58,9 @@ test-modules: core nts ## gofmt, vet and unit tests of every Go module (or those
 	bash $(ROOT)/scripts/test-modules.sh
 
 race: test-modules ## same as test-modules (the race detector is on unless RACE=)
+
+test-dvt: ## the dvt variant (CI job dvt): both cores, the build and link checks, the dvt-tagged Go tests, the DVT core's C suites
+	bash $(ROOT)/scripts/dvt-test.sh names core runner link go ctest
 
 # The runners make build puts in build/<arch>/bin, named as scripts/test.sh
 # names them (bin_env), so tests/e2e checks those and not its own builds.

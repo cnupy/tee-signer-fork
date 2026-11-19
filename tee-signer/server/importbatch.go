@@ -265,7 +265,8 @@ func (s *Server) storeBatch(reqs []backend.SealedImportRequest, pks []backend.Pu
 	for i := range reqs {
 		r := &reqs[i]
 		rec := shareRecord{Pubkey: pks[i], Secret: secrets[i][:], Index: r.Index,
-			History: r.Interchange != nil && r.Interchange.HasAttestation, Batch: tag, GroupPubkey: groups[i]}
+			History: r.Interchange != nil && r.Interchange.HasAttestation, Batch: tag}
+		rec.setGroupKey(groups[i])
 		if !rec.History && floorOn {
 			rec.SourceFloor = floor
 		}

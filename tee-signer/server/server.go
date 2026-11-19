@@ -162,10 +162,8 @@ type Server struct {
 	// max_keys slot until its import ends (SIAC-01, checkSlots).
 	admitMu   sync.Mutex
 	admitting map[backend.Pubkey]bool
-	// groups maps the group key of each dv_share key this runner stores,
-	// loads or is adding to that key: one share per distributed validator
-	// (claimGroups). Under admitMu.
-	groups map[backend.Pubkey]backend.Pubkey
+	// dvState: the dv_share state (dvshare.go), empty without the tag dvt.
+	dvState
 	// shareHash is the sha256 of each stored share record this runner
 	// loaded or wrote, nil without a mark log (putShare). shareSetMu
 	// orders share writes.
@@ -196,33 +194,7 @@ type Server struct {
 	connsNote, handshakesNote, inflightNote limitNote
 }
 
-// shareRecord is the sealed form of a stored share. parseShareRecord
-// reads it and refuses a field it does not have (keyorigin.go).
-type shareRecord struct {
-	Pubkey backend.Pubkey `json:"pubkey"`
-	Secret []byte         `json:"secret"`
-	Index  uint64         `json:"index"`
-	// History: the import that stored the share carried attestation
-	// maxima, which raised the mark log first. A restart exempts the key
-	// from the source gate (state.Hooks.NoteHistory). The host can roll
-	// the record back to one without it, which only gates the key again.
-	History bool `json:"history,omitempty"`
-	// SourceFloor: the import came without vote history, and the key signs
-	// no vote with a source below this epoch, the restart floor epoch at the
-	// import (state.Hooks.ImportFloor, SLBOUND-01). A restart sets it again.
-	// The host stores the record; the mark log's share set vouches for it
-	// (LoadListedShares), so an older record with a lower floor or none
-	// loads every key with a fresh floor instead.
-	SourceFloor uint64 `json:"source_floor,omitempty"`
-	// Batch tags the records of one batch import (importbatch.go), so a
-	// start can leave out the records of a batch that did not complete.
-	Batch []byte `json:"batch,omitempty"`
-	// GroupPubkey: under signing_mode = dv_share, the validator key of the
-	// import order (the Charon group key), which the share's selection
-	// proofs must verify under. Pubkey is then the share's own key. Set
-	// only in dv_share mode; a runner built before it refuses the record.
-	GroupPubkey *backend.Pubkey `json:"group_pubkey,omitempty"`
-}
+// shareRecord is defined in nodvt.go, and with group_pubkey in dvshare.go.
 
 func shareKey(pk backend.Pubkey) string { return "shares/" + hex.EncodeToString(pk[:]) }
 
@@ -600,10 +572,10 @@ func (s *Server) LoadListedShares(keys []string) (int, error) {
 		copy(sec[:], rec.Secret)
 		err := s.checkWholeKey(pk, &sec)
 		if err == nil {
-			err = s.checkGroupKey(pk, rec.GroupPubkey)
+			err = s.checkGroupKey(pk, rec.groupKey())
 		}
 		if err == nil {
-			_, err = s.claimGroups([]backend.Pubkey{pk}, []*backend.Pubkey{rec.GroupPubkey})
+			_, err = s.claimGroups([]backend.Pubkey{pk}, []*backend.Pubkey{rec.groupKey()})
 		}
 		if err != nil {
 			clear(sec[:])
@@ -614,7 +586,7 @@ func (s *Server) LoadListedShares(keys []string) (int, error) {
 		if rec.SourceFloor != 0 && !rec.History {
 			s.Hooks.NoteImportFloor(pk, rec.SourceFloor)
 		}
-		_, err = s.addValidator(pk, &sec, rec.Index, nil, rec.GroupPubkey)
+		_, err = s.addValidator(pk, &sec, rec.Index, nil, rec.groupKey())
 		clear(sec[:])
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", k, err))
@@ -1355,7 +1327,8 @@ func (s *Server) addShareGroup(pk backend.Pubkey, secret *[32]byte, index uint64
 		}
 	}
 	rec := shareRecord{Pubkey: pk, Secret: secret[:], Index: index,
-		History: interchange != nil && interchange.HasAttestation, GroupPubkey: group}
+		History: interchange != nil && interchange.HasAttestation}
+	rec.setGroupKey(group)
 	if !rec.History && s.Hooks != nil {
 		// No vote history: the key may have voted elsewhere up to now, past
 		// the log's gate (SLBOUND-01). Gate it from now on, before it can
@@ -1443,55 +1416,6 @@ func (s *Server) checkSlots(pks ...backend.Pubkey) error {
 		return backend.Refused(backend.StatusNoMem, "this runner stores, holds or is adding %d keys with this one, its setup's max_keys is %d", len(held), n)
 	}
 	return nil
-}
-
-// claimGroups takes the group key groups[i] of each dv_share key pks[i]
-// (nil for a key of another mode) for that key. It refuses a group key
-// that another key of this runner stores, loads or is adding: a dv_share
-// runner holds one share of each distributed validator, as a threshold
-// runner holds one share of each validator, and with t shares it would
-// hold the whole key. It returns the group keys it took, for
-// unclaimGroups when the import stores nothing.
-func (s *Server) claimGroups(pks []backend.Pubkey, groups []*backend.Pubkey) ([]backend.Pubkey, error) {
-	s.admitMu.Lock()
-	defer s.admitMu.Unlock()
-	claim := map[backend.Pubkey]backend.Pubkey{}
-	for i, g := range groups {
-		if g == nil {
-			continue
-		}
-		have, ok := s.groups[*g]
-		if !ok {
-			have, ok = claim[*g]
-		}
-		if ok && have != pks[i] {
-			return nil, &backend.RefusedError{Code: backend.StatusDuplicate, Detail: fmt.Sprintf(
-				"key %s is a share of validator %s, and this runner holds or is adding its share %s: a dv_share runner holds one share of each validator",
-				pks[i].String()[:18], g.String()[:18], have.String()[:18])}
-		}
-		claim[*g] = pks[i]
-	}
-	if s.groups == nil {
-		s.groups = map[backend.Pubkey]backend.Pubkey{}
-	}
-	var took []backend.Pubkey
-	for g, pk := range claim {
-		if _, ok := s.groups[g]; !ok {
-			s.groups[g] = pk
-			took = append(took, g)
-		}
-	}
-	return took, nil
-}
-
-// unclaimGroups gives back the group keys of an import that stored no
-// record.
-func (s *Server) unclaimGroups(took []backend.Pubkey) {
-	s.admitMu.Lock()
-	defer s.admitMu.Unlock()
-	for _, g := range took {
-		delete(s.groups, g)
-	}
 }
 
 func (s *Server) release(pk backend.Pubkey) {
@@ -1685,6 +1609,7 @@ func (s *Server) health() (*backend.Health, error) {
 		Platform:     s.Platform.Name,
 		Version:      Version,
 		Protocol:     backend.ProtocolLevel,
+		Variant:      Variant,
 		Ready:        true,
 		Validators:   s.Signer.KeyCount(),
 		ConfigHash:   setup.SetupHash,

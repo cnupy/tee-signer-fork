@@ -24,6 +24,19 @@
 #                 scripts/tf-providers.sh, scripts/common.sh (the Terraform
 #                 image) or .github/workflows/ci.yml. 1 also when CI_ALL=1
 #                 and when the diff cannot be made.
+#   CI_DVT=       1: the dvt job runs (make test-dvt: the dvt variant's
+#                 core, link checks and tagged tests): a change to
+#                 signer-core/, tee-signer/ (the dv_share files and their
+#                 callers: server.go, importorder.go, config.go, start.go;
+#                 the job vets the whole module with the tag dvt),
+#                 signer-protocol/, signer-admin dv-split
+#                 (cmd/signer-admin dv*, commitments*), governance/importorder/,
+#                 governance/setupwire/, gateway/, release/, the build
+#                 scripts of the variants (build-core.sh, build-runner.sh,
+#                 build-runner-nts.sh, generic-images.sh, common.sh,
+#                 dvt-test.sh), ci-scope.sh, the Makefile or ci.yml; *.md
+#                 does not count. 1 also when CI_ALL=1 and when the diff
+#                 cannot be made.
 # ALL when CI_ALL=1 or FUZZ_ALL=1, on any event but pull_request
 # (GITHUB_EVENT_NAME), and when affected.sh prints ALL. The reason goes to
 # stderr.
@@ -36,16 +49,17 @@ RUNNER_MODULES=(tee-signer platform platform-aws platform-azure platform-gcp sig
 # The modules of the gateway that no runner holds.
 GATEWAY_MODULES=(gateway web3signer-api)
 
-# emit <modules> <core> <e2e> <gateway e2e> <tests>; CI_AWS_TF comes from $aws_tf
+# emit <modules> <core> <e2e> <gateway e2e> <tests>; CI_AWS_TF and CI_DVT
+# come from $aws_tf and $dvt
 emit() {
-  printf 'CI_MODULES=%s\nFUZZ_MODULES=%s\nCI_CORE=%s\nCI_E2E=%s\nCI_E2E_GATEWAY=%s\nCI_TESTS=%s\nCI_AWS_TF=%s\n' \
-    "$1" "$1" "$2" "$3" "$4" "$5" "$aws_tf"
+  printf 'CI_MODULES=%s\nFUZZ_MODULES=%s\nCI_CORE=%s\nCI_E2E=%s\nCI_E2E_GATEWAY=%s\nCI_TESTS=%s\nCI_AWS_TF=%s\nCI_DVT=%s\n' \
+    "$1" "$1" "$2" "$3" "$4" "$5" "$aws_tf" "$dvt"
 }
 
-# aws_tf_changed [BASE]: the change touches the AWS Terraform module or its
-# checks, or the diff cannot be made. BASE as for scripts/affected.sh.
-aws_tf_changed() {
-  local base files f
+# changed_files [BASE]: the files the change touches; fails when the diff
+# cannot be made. BASE as for scripts/affected.sh.
+changed_files() {
+  local base
   if [ -n "${1:-}" ]; then
     base="$1"
   elif [ -n "${GITHUB_BASE_REF:-}" ]; then
@@ -53,7 +67,31 @@ aws_tf_changed() {
   else
     base=origin/main
   fi
-  files="$(git -C "$ROOT" diff --name-only --no-renames "$base...HEAD" 2>/dev/null)" || return 0
+  git -C "$ROOT" diff --name-only --no-renames "$base...HEAD" 2>/dev/null
+}
+
+# dvt_changed [BASE]: the change touches code or build files of the dvt
+# variant (CI_DVT above), or the diff cannot be made.
+dvt_changed() {
+  local files f
+  files="$(changed_files "$@")" || return 0
+  while IFS= read -r f; do
+    case "$f" in
+      *.md) ;;
+      signer-core/* | tee-signer/* | signer-protocol/* | governance/importorder/* | governance/setupwire/* | \
+        signer-admin/cmd/signer-admin/dv* | signer-admin/cmd/signer-admin/commitments* | gateway/* | release/* | \
+        scripts/build-core.sh | scripts/build-runner.sh | scripts/build-runner-nts.sh | scripts/generic-images.sh | \
+        scripts/common.sh | scripts/dvt-test.sh | scripts/ci-scope.sh | Makefile | .github/workflows/ci.yml) return 0 ;;
+    esac
+  done <<<"$files"
+  return 1
+}
+
+# aws_tf_changed [BASE]: the change touches the AWS Terraform module or its
+# checks, or the diff cannot be made. BASE as for scripts/affected.sh.
+aws_tf_changed() {
+  local files f
+  files="$(changed_files "$@")" || return 0
   while IFS= read -r f; do
     case "$f" in
       *.md) ;;
@@ -74,6 +112,11 @@ aws_tf=0
 if [ "${CI_ALL:-0}" = 1 ] || aws_tf_changed "$@"; then
   aws_tf=1
   log "ci-scope: the AWS Terraform checks run"
+fi
+dvt=0
+if [ "${CI_ALL:-0}" = 1 ] || dvt_changed "$@"; then
+  dvt=1
+  log "ci-scope: the dvt variant checks run"
 fi
 case "$m" in
   ALL)

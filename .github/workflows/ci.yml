@@ -51,7 +51,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      # Sets CI_MODULES, FUZZ_MODULES, CI_CORE, CI_E2E, CI_E2E_GATEWAY, CI_TESTS and CI_AWS_TF.
+      # Sets CI_MODULES, FUZZ_MODULES, CI_CORE, CI_E2E, CI_E2E_GATEWAY, CI_TESTS, CI_AWS_TF and CI_DVT.
       - name: scope
         # shell: bash runs with pipefail, so a failing ci-scope.sh fails the step.
         shell: bash
@@ -92,7 +92,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      # Sets CI_MODULES, FUZZ_MODULES, CI_CORE, CI_E2E, CI_E2E_GATEWAY, CI_TESTS and CI_AWS_TF.
+      # Sets CI_MODULES, FUZZ_MODULES, CI_CORE, CI_E2E, CI_E2E_GATEWAY, CI_TESTS, CI_AWS_TF and CI_DVT.
       - name: scope
         # shell: bash runs with pipefail, so a failing ci-scope.sh fails the step.
         shell: bash
@@ -119,7 +119,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      # Sets CI_MODULES, FUZZ_MODULES, CI_CORE, CI_E2E, CI_E2E_GATEWAY, CI_TESTS and CI_AWS_TF.
+      # Sets CI_MODULES, FUZZ_MODULES, CI_CORE, CI_E2E, CI_E2E_GATEWAY, CI_TESTS, CI_AWS_TF and CI_DVT.
       - name: scope
         # shell: bash runs with pipefail, so a failing ci-scope.sh fails the step.
         shell: bash
@@ -147,6 +147,48 @@ jobs:
           name: logs
           path: logs/
 
+  # The dvt variant (DVT in scripts/common.sh): both cores, the checks that
+  # the default build holds no dv_share code and that no runner links
+  # against the other variant's core, the dvt-tagged Go tests and the DVT
+  # core's C suites (make test-dvt). It runs beside the other jobs, which
+  # build the default variant only, and has work only when the dvt code,
+  # its callers or the variants' build files changed (CI_DVT). Its fuzzing
+  # runs nightly (fuzz-nightly.yml).
+  dvt:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      # The history, for the diff against the base branch.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      # Sets CI_MODULES, FUZZ_MODULES, CI_CORE, CI_E2E, CI_E2E_GATEWAY, CI_TESTS, CI_AWS_TF and CI_DVT.
+      - name: scope
+        # shell: bash runs with pipefail, so a failing ci-scope.sh fails the step.
+        shell: bash
+        run: bash scripts/ci-scope.sh | tee -a "$GITHUB_ENV"
+      - name: no tests
+        if: env.CI_DVT != '1'
+        run: echo "The dvt variant's code did not change, nothing to test."
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        if: env.CI_DVT == '1'
+        with:
+          go-version: "1.26.x"
+          cache: false
+      # The vectors come from their pinned releases (sha256 checked).
+      - if: env.CI_DVT == '1'
+        run: bash signer-core/scripts/fetch.sh
+      - if: env.CI_DVT == '1'
+        run: make test-dvt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: logs-dvt
+          path: |
+            logs/
+            signer-core/build/*-dvt/test-logs/
+
   # terraform validate and terraform test (mock provider) of
   # platform-aws/deploy. No AWS account is used.
   aws-terraform:
@@ -158,7 +200,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      # Sets CI_MODULES, FUZZ_MODULES, CI_CORE, CI_E2E, CI_E2E_GATEWAY, CI_TESTS and CI_AWS_TF.
+      # Sets CI_MODULES, FUZZ_MODULES, CI_CORE, CI_E2E, CI_E2E_GATEWAY, CI_TESTS, CI_AWS_TF and CI_DVT.
       - name: scope
         # shell: bash runs with pipefail, so a failing ci-scope.sh fails the step.
         shell: bash

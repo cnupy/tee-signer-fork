@@ -1,10 +1,10 @@
-//go:build !debugimport
+//go:build dvt && !debugimport
 
 package server
 
 import (
-	"encoding/binary"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/lidofinance/tee-signer/governance/importorder"
@@ -21,33 +21,6 @@ import (
 func newDVEnv(t *testing.T) *tgtEnv {
 	t.Helper()
 	return newShareTgtEnv(t, "dev", func(s *setupwire.Setup) { s.SigningMode = setupwire.SigningModeDVShare })
-}
-
-// dvShare is share index of a 3-of-4 split of a fresh group key, as a
-// Charon cluster lock holds it: the group key, the share and its key, and
-// the split's commitments.
-type dvShare struct {
-	groupSk, sk [32]byte
-	group, pk   backend.Pubkey
-	commitments []backend.Pubkey
-	index       uint8
-	otherSk     [32]byte // another share of the same split
-	otherPk     backend.Pubkey
-	otherIndex  uint8
-}
-
-func newDVShare(t *testing.T) *dvShare {
-	t.Helper()
-	gsk, gpk := newKey(t)
-	shares, commitments, err := software.SplitWithCommitments(gsk, 3, 4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	d := &dvShare{groupSk: gsk, group: gpk, commitments: commitments, index: 2, sk: shares[1].Secret,
-		otherSk: shares[2].Secret, otherIndex: 3}
-	d.pk, _ = core.PubkeyOf(d.sk)
-	d.otherPk, _ = core.PubkeyOf(d.otherSk)
-	return d
 }
 
 // request is the IMPORT_SHARE_SEALED request of share (sk, index) of d,
@@ -77,42 +50,6 @@ func (e *tgtEnv) importDV(d *dvShare) error {
 	}
 	_, err = e.srv.dispatch(ctx, wire.Frame{Type: wireadmin.TypeImportSealed, Payload: p})
 	return err
-}
-
-// groupContribution is a ContributionAndProof (minimal preset, the dev
-// chain's) for validator index 9 whose selection proof the group key sk
-// made, as a Charon cluster combines it.
-func (e *tgtEnv) groupContribution(sk [32]byte, pk backend.Pubkey) *backend.ContributionAndProof {
-	e.t.Helper()
-	m := software.NewMemHooks()
-	m.Clock = func() (uint64, error) { return e.now(), nil }
-	cfg := e.signer.Config()
-	gcfg := cfg
-	gcfg.DeviceMark = false // the memory hooks keep per-validator marks
-	g, err := core.NewSigner(gcfg, 1, 1, m)
-	if err != nil {
-		e.t.Fatal(err)
-	}
-	defer g.Close()
-	if _, err := g.AddValidator(pk, sk, 9, nil); err != nil {
-		e.t.Fatal(err)
-	}
-	slot := e.signer.EpochAt(e.now()) * cfg.SlotsPerEpoch
-	sel := &backend.SyncSelectionProof{Slot: slot, SubcommitteeIndex: 1}
-	d, _ := cfg.MessageDomain(sel)
-	proof, err := g.Sign(backend.SignRequest{Pubkey: pk, Message: sel, Domain: d})
-	if err != nil {
-		e.t.Fatal(err)
-	}
-	le := binary.LittleEndian
-	b := le.AppendUint64(nil, 9)
-	b = le.AppendUint64(b, slot)
-	b = append(b, make([]byte, 32)...)
-	b = le.AppendUint64(b, 1)
-	b = append(b, 0x01)                // aggregation_bits: 32 / 4 subnets = 8 bits
-	b = append(b, make([]byte, 96)...) // contribution signature
-	b = append(b, proof[:]...)
-	return &backend.ContributionAndProof{SSZ: b}
 }
 
 // A dv_share runner takes a share of a Charon split under the approvers'
@@ -157,7 +94,8 @@ func TestDVShareImportAndSign(t *testing.T) {
 
 // A Charon client may register the group key with the builder: a dv_share
 // runner signs a registration that names the share key or the group key,
-// and refuses another key. A single-mode runner takes only its own key.
+// and refuses another key. A single-mode runner takes only its own key
+// (TestSingleModeRefusesGroupRegistration, default build).
 func TestDVShareRegistrationPubkey(t *testing.T) {
 	e := newDVEnv(t)
 	d := newDVShare(t)
@@ -174,28 +112,6 @@ func TestDVShareRegistrationPubkey(t *testing.T) {
 		if c.ok && err != nil || !c.ok && backend.StatusOf(err) != backend.StatusPolicyPubkey {
 			t.Errorf("dv_share, registration for the %s: %v, want ok %v", c.name, err, c.ok)
 		}
-	}
-	single := newTgtEnv(t, "dev", nil)
-	if err := single.importSealed(d.pk, d.sk, 9, nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := single.signMsg(d.pk, single.registration(d.group)); backend.StatusOf(err) != backend.StatusPolicyPubkey {
-		t.Errorf("single mode, registration for the group key: %v, want POLICY_PUBKEY", err)
-	}
-}
-
-// The problem dv_share solves: a single-mode runner holds the same Charon
-// share as a whole key, and refuses the contribution with the group's
-// proof.
-func TestSingleModeRefusesGroupSelectionProof(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
-	d := newDVShare(t)
-	if err := e.importSealed(d.pk, d.sk, 9, nil); err != nil {
-		t.Fatal(err)
-	}
-	err := e.signMsg(d.pk, e.groupContribution(d.groupSk, d.group))
-	if backend.StatusOf(err) != backend.StatusSelectionProof {
-		t.Fatalf("single mode, the group's proof: %v, want SELECTION_PROOF", err)
 	}
 }
 
@@ -239,7 +155,9 @@ func TestDVShareBatch(t *testing.T) {
 
 // A dv_share key exists only with its group key: a key added without one
 // (the debug plain import's path) is refused, and so is a stored record
-// without one, or a record with one under another mode.
+// without one. A record with one under another mode never loads: the dvt
+// build runs no other mode (CheckSigningMode), and the default build reads
+// no group key (TestShareRecordWithGroupKeyRefused).
 func TestDVShareNeedsGroupKey(t *testing.T) {
 	e := newDVEnv(t)
 	sk, pk := newKey(t)
@@ -255,19 +173,6 @@ func TestDVShareNeedsGroupKey(t *testing.T) {
 	}
 	if n, err := e.srv.LoadListedShares([]string{shareKey(pk)}); n != 0 || err == nil || !strings.Contains(err.Error(), "group key") {
 		t.Fatalf("load of a dv_share record without a group key: %d, %v", n, err)
-	}
-
-	single := newTgtEnv(t, "dev", nil)
-	_, gpk := newKey(t)
-	blob, err = single.srv.sealRecord(shareRecord{Pubkey: pk, Secret: sk[:], Index: 1, GroupPubkey: &gpk})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := single.srv.putShare(pk, blob); err != nil {
-		t.Fatal(err)
-	}
-	if n, err := single.srv.LoadListedShares([]string{shareKey(pk)}); n != 0 || err == nil || !strings.Contains(err.Error(), "group key") {
-		t.Fatalf("load of a single-mode record with a group key: %d, %v", n, err)
 	}
 }
 
@@ -336,5 +241,96 @@ func TestDVShareSecondShareRefused(t *testing.T) {
 	keys := e.srv.Signer.Keys()
 	if e.loadErr == nil || !strings.Contains(e.loadErr.Error(), "one share") || len(keys) != 1 {
 		t.Fatalf("start with two shares of one validator stored: keys %d, %v", len(keys), e.loadErr)
+	}
+}
+
+// SSI-STORAGE-01 for dv_share (TestShareAdmissionConcurrent is the other
+// modes'): many imports at once, each of another share of one distributed
+// validator. One wins (claimGroups); the store and the core hold its share
+// alone, under the group key, also after a restart.
+func TestDVShareAdmissionConcurrent(t *testing.T) {
+	e := newDVEnv(t)
+	gsk, group := newKey(t)
+	const n = 8
+	shares, err := software.Split(gsk, 3, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	won := make([]*backend.ValidatorKey, n)
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sec := shares[i].Secret
+			pk, err := core.PubkeyOf(sec)
+			if err != nil {
+				return
+			}
+			if k, err := e.srv.addShareGroup(pk, &sec, uint64(i), &testMark, &group, "sealed"); err == nil {
+				won[i] = &k
+			}
+		}()
+	}
+	wg.Wait()
+	w := -1
+	for i, k := range won {
+		if k != nil {
+			if w >= 0 {
+				t.Fatalf("requests %d and %d both stored a share of the validator", w, i)
+			}
+			w = i
+		}
+	}
+	if w < 0 {
+		t.Fatal("no request stored a share of the validator")
+	}
+	check := func(when string) {
+		t.Helper()
+		keys := e.signer.Keys()
+		if len(keys) != 1 || keys[0].Pubkey != won[w].Pubkey || keys[0].Index != uint64(w) {
+			t.Fatalf("%s: loaded %+v, the winner %+v", when, keys, won[w])
+		}
+		if stored, err := ListShares(e.store); err != nil || len(stored) != 1 {
+			t.Fatalf("%s: stored %v, %v; want the winner's record alone", when, stored, err)
+		}
+		if g := e.recordOf(won[w].Pubkey).GroupPubkey; g == nil || *g != group {
+			t.Fatalf("%s: the record's group key %v", when, g)
+		}
+	}
+	check("before a restart")
+	e.restart()
+	check("after a restart")
+}
+
+// A dv_share runner holds one share of a split with n >= 2, never the
+// validator key (TestThresholdModeRefusesAWholeKey is the threshold
+// mode's): a 1 of 1 order and a key filed as its own group key are
+// refused, and nothing is stored or loaded.
+func TestDVShareRefusesAWholeKey(t *testing.T) {
+	e := newDVEnv(t)
+	sk, pk := newKey(t)
+	req := backend.SealedImportRequest{Pubkey: pk, SharePubkey: pk, Index: 5, Order: e.importOrder([]byte{1, 2}, pk, nil),
+		T: 1, N: 1, ShareIndex: 1, Commitments: []backend.Pubkey{pk}}
+	var err error
+	if req.Sealed, err = sealedimport.Seal(e.sealTo(), &req, &sk); err != nil {
+		t.Fatal(err)
+	}
+	p, err := wireadmin.EncodeImportSealed(&req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.srv.dispatch(ctx, wire.Frame{Type: wireadmin.TypeImportSealed, Payload: p})
+	if backend.StatusOf(err) != backend.StatusBadKey || !strings.Contains(err.Error(), "never a whole key") {
+		t.Errorf("1 of 1: %v, want a BAD_KEY refusal", err)
+	}
+	if _, err := e.srv.addShareGroup(pk, &sk, 5, nil, &pk, "sealed"); backend.StatusOf(err) != backend.StatusBadKey || !strings.Contains(err.Error(), "its own group key") {
+		t.Errorf("a key filed as its own group key: %v, want a BAD_KEY refusal", err)
+	}
+	if n := len(e.srv.Signer.Keys()); n != 0 {
+		t.Fatalf("%d keys loaded", n)
+	}
+	if stored, err := ListShares(e.store); err != nil || len(stored) != 0 {
+		t.Fatalf("stored %v, %v", stored, err)
 	}
 }

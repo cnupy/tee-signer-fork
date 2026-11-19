@@ -8,7 +8,7 @@
 # build/<arch>/bin are not touched. The cloud runners there have the tag
 # already (common.sh runner_tags), so their -nts copies here are the same
 # builds; the dev runners get it only here. Needs build/<arch>/lib/libsigner_core.a
-# and libblst.a (scripts/build-core.sh) and the Rust archive of build-nts.sh.
+# (libsigner_core_dvt.a with DVT=1) and libblst.a (scripts/build-core.sh) and the Rust archive of build-nts.sh.
 #
 # Each binary is checked: static, of the arch asked for, built with the tags
 # of its platform plus nts, holding the library's version string, and linking
@@ -32,8 +32,11 @@ fi
 modules_of() { go version -m "$1" | awk '$1 == "dep" { print $2, $3 }' | LC_ALL=C sort; }
 
 LDFLAGS="-s -w -buildid= -linkmode external -extldflags -static"
+# The core of the build variant (DVT, common.sh).
+core_lib=libsigner_core.a
+[ "$DVT" = 0 ] || core_lib=libsigner_core_dvt.a
 for arch in "${archs[@]}"; do
-  for lib in "$BUILD/$arch/lib/libsigner_core.a" "$BUILD/$arch/lib/libblst.a" "$NTS_OUT/$arch/lib/libsigner_nts.a"; do
+  for lib in "$BUILD/$arch/lib/$core_lib" "$BUILD/$arch/lib/libblst.a" "$NTS_OUT/$arch/lib/libsigner_nts.a"; do
     [ -f "$lib" ] || { echo "build-runner-nts: $lib is missing (scripts/build-core.sh, scripts/build-nts.sh)" >&2; exit 1; }
   done
   out="$NTS_OUT/$arch/bin"

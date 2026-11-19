@@ -5,6 +5,7 @@
 #                                cross build (see scripts/cross-aarch64.sh)
 #   make symbols                 list undefined symbols of the core objects
 #   make fuzz                    fuzz targets with ASan and UBSan (scripts/fuzz.sh runs them)
+#   make DVT=1 ...               the same for the DVT build (build/<arch>-dvt)
 #   make clean
 #
 # Tests are run by scripts/test.sh, which knows where the vectors are.
@@ -19,7 +20,20 @@ NM := nm
 endif
 
 BLST_SRC ?= $(abspath third_party/blst)
+# DVT=1: the DVT build, with -DSC_DVT (sc_signer_add_validator_group and the
+# group key rules, see signer_core.h), into build/<arch>-dvt. DVT=0, the
+# default, is the core without them.
+DVT ?= 0
+ifneq ($(filter-out 0 1,$(DVT)),)
+$(error DVT must be 0 or 1, got '$(DVT)')
+endif
+ifeq ($(DVT),1)
+DVT_DEFS := -DSC_DVT
+BUILD ?= build/$(ARCH)-dvt
+else
+DVT_DEFS :=
 BUILD ?= build/$(ARCH)
+endif
 BLST_LIB ?= $(BUILD)/blst/libblst.a
 CORE_LIB := $(BUILD)/libsigner_core.a
 
@@ -43,8 +57,8 @@ WARN := -Wall -Wextra -Werror -Wshadow -Wstrict-prototypes -Wmissing-prototypes
 # -ffreestanding drops the distro default stack protector, so it is turned
 # on here; the objects then need __stack_chk_fail (and __stack_chk_guard on
 # aarch64), which libc supplies.
-CORE_CFLAGS := -std=c11 -O2 -fPIC -ffreestanding -fstack-protector-strong -fno-common $(WARN) $(INCLUDES) $(CFLAGS)
-TEST_CFLAGS := -std=c11 -O2 -D_DEFAULT_SOURCE -Wall -Wextra -Werror -Wno-format-truncation \
+CORE_CFLAGS := -std=c11 -O2 -fPIC -ffreestanding -fstack-protector-strong -fno-common $(WARN) $(DVT_DEFS) $(INCLUDES) $(CFLAGS)
+TEST_CFLAGS := -std=c11 -O2 -D_DEFAULT_SOURCE $(DVT_DEFS) -Wall -Wextra -Werror -Wno-format-truncation \
                -Isrc -I$(MARKFORMAT_DIR) $(INCLUDES) $(CFLAGS)
 
 CORE_SRCS := src/ssz.c src/bls.c src/slashing.c src/policy.c src/signer.c src/typed.c
@@ -100,8 +114,8 @@ FUZZ_INSTR := $(FUZZ_SAN) -fsanitize-coverage=trace-pc,trace-cmp
 FUZZ_LINK := $(FUZZ_SAN)
 FUZZ_MAIN := $(FUZZ_BUILD)/obj-driver/driver.o
 endif
-FUZZ_CORE_CFLAGS := -std=c11 -ffreestanding -fno-common -Wall -Wextra $(INCLUDES) $(FUZZ_INSTR)
-FUZZ_CFLAGS := -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Isrc -Ifuzz -I$(MARKFORMAT_DIR) $(INCLUDES) $(FUZZ_INSTR)
+FUZZ_CORE_CFLAGS := -std=c11 -ffreestanding -fno-common -Wall -Wextra $(DVT_DEFS) $(INCLUDES) $(FUZZ_INSTR)
+FUZZ_CFLAGS := -std=c11 -D_DEFAULT_SOURCE $(DVT_DEFS) -Wall -Wextra -Isrc -Ifuzz -I$(MARKFORMAT_DIR) $(INCLUDES) $(FUZZ_INSTR)
 # Objects per engine, so a change of engine rebuilds and relinks everything.
 FUZZ_CORE_OBJS := $(patsubst src/%.c,$(FUZZ_BUILD)/obj-$(FUZZ_ENGINE)/%.o,$(CORE_SRCS))
 FUZZ_SSZ := checkpoint attestation_data beacon_block_header voluntary_exit \

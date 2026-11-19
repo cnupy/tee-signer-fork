@@ -114,7 +114,7 @@ func wantNoLoad(e *tgtEnv, pks ...backend.Pubkey) {
 // The operator removes every share, and K comes back without history. The
 // host puts the old record back: no key loads.
 func TestShareRecordReplayRefused(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	e.looseLoad = true
 	pka, pk, _ := historyPair(t, e)
 	sk := e.secretOf(pk)
@@ -147,7 +147,7 @@ func TestShareRecordReplayRefused(t *testing.T) {
 // vouches for and loads it as it is: B keeps its history, A its floor, and
 // nothing is rewritten.
 func TestShareSetLoadsTheVouchedSet(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	pka, pkb, floor := historyPair(t, e)
 	puts := e.store.putsOf(shareKey(pka)) + e.store.putsOf(shareKey(pkb))
 	recs := e.records()
@@ -177,7 +177,7 @@ func TestShareSetCutWriteLoadsTheSetBefore(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("the test makes the mark log unwritable with a directory mode, which root ignores")
 	}
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	pka, pkb, floor := historyPair(t, e)
 	skc, pkc := newKey(t)
 	t.Cleanup(func() { e.setMarksMode(0o700) })
@@ -221,7 +221,7 @@ func TestShareSetCutWriteLoadsTheSetBefore(t *testing.T) {
 // key loads, and nothing is written. The record comes back: the set loads
 // as it was, B with its history.
 func TestShareSetHiddenRecordLoadsNoKey(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	e.looseLoad = true
 	pka, pkb, _ := historyPair(t, e)
 	blob, _ := e.store.Get(shareKey(pka))
@@ -251,7 +251,7 @@ func TestShareWriteLogBeforeStore(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("the test makes the mark log unwritable with a directory mode, which root ignores")
 	}
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	sk, pk := newKey(t)
 	if err := e.importSealed(pk, sk, 5, nil); err != nil {
 		t.Fatal(err)
@@ -275,7 +275,7 @@ func TestShareWriteLogBeforeStore(t *testing.T) {
 // corrupt, or not a record) is no part of the share set: the start that
 // first sees it does not reset for it, and later starts rewrite nothing.
 func TestUnreadableRecordDoesNotReset(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	e.looseLoad = true
 	pka, pkb, _ := historyPair(t, e)
 	_, pkc := newKey(t)
@@ -306,7 +306,7 @@ func TestUnreadableRecordDoesNotReset(t *testing.T) {
 // vouch for, loads no key and names the extra object. Once the operator
 // removes it, the set loads, B with its history.
 func TestShareWriteNotLandedNotVouched(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	e.looseLoad = true
 	_, pkb, _ := historyPair(t, e)
 	skc, pkc := newKey(t)
@@ -352,7 +352,7 @@ func TestShareWriteNotLandedNotVouched(t *testing.T) {
 // restarts the runner: the start finds a set the log does not vouch for,
 // loads no key and names the kept record.
 func TestShareWriteNotLandedDroppedAtOnce(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	e.looseLoad = true
 	_, pkb, _ := historyPair(t, e)
 	skc, pkc := newKey(t)
@@ -381,7 +381,7 @@ func TestShareWriteNotLandedDroppedAtOnce(t *testing.T) {
 // reads it back and keeps the set after, so the import stands and the
 // next start finds the stored set vouched, with no reset.
 func TestShareWriteLostReplyLanded(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	pka, pkb, _ := historyPair(t, e)
 	skc, pkc := newKey(t)
 	e.store.mu.Lock()
@@ -411,7 +411,7 @@ func TestShareWriteLostReplyLanded(t *testing.T) {
 // runner stores no share, the log's next record carries the set before
 // (markstore.RecordShareSet keeps it), and the next start loads that set.
 func TestShareWriteLogReplyLost(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	_, pkb, _ := historyPair(t, e)
 	before := e.marks.ShareSet()
 	skc, pkc := newKey(t)
@@ -452,7 +452,7 @@ func TestShareWriteLogReplyLost(t *testing.T) {
 // store write fails. The host puts the old records back: the next start
 // must not load the old record of B.
 func TestFailedReimportDoesNotVouchOldRecord(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	e.looseLoad = true
 	pka, pkb, _ := historyPair(t, e)
 	skb := e.secretOf(pkb)
@@ -479,7 +479,7 @@ func TestFailedReimportDoesNotVouchOldRecord(t *testing.T) {
 // An empty store under a log with no share set, or an empty one, is a new
 // signer: it is ready.
 func TestEmptyStoreEmptySetReady(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	e.restart()
 	if h, err := e.srv.health(); err != nil || !h.Ready || h.LoadFailed != "" || h.Validators != 0 {
 		t.Fatalf("health %+v %v", h, err)
@@ -489,7 +489,7 @@ func TestEmptyStoreEmptySetReady(t *testing.T) {
 // A share stored under an uppercase name does not load: a key has one
 // store name, lowercase hex, so case variants cannot pass as shares.
 func TestShareNameOnlyLowercase(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	e.looseLoad = true
 	sk, pk := newKey(t)
 	if err := e.importSealed(pk, sk, 5, nil); err != nil {
@@ -518,7 +518,7 @@ func TestShareNameOnlyLowercase(t *testing.T) {
 // on. The records come back: the next start loads them, B with its
 // history.
 func TestEveryRecordHiddenKeepsTheVouchedSet(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	e.looseLoad = true
 	pka, pkb, _ := historyPair(t, e)
 	bloba, _ := e.store.Get(shareKey(pka))
@@ -610,7 +610,7 @@ func (e *tgtEnv) writeNilSetRecord() {
 // for the set it had. The records readable again: the next start loads
 // them, B with its history, and imports go through again.
 func TestImportRefusedWhileRecordsHidden(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	e.looseLoad = true
 	pka, pkb, _ := historyPair(t, e)
 	recs := e.records()
@@ -656,7 +656,7 @@ func TestImportRefusedWhileRecordsHidden(t *testing.T) {
 // which records a new set over the old one. The key signs, the runner is
 // ready, and the next start loads the key as vouched.
 func TestImportAfterEveryRecordRemoved(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	e.looseLoad = true
 	pka, pkb, _ := historyPair(t, e)
 	skb := e.secretOf(pkb)
@@ -697,7 +697,7 @@ func TestImportAfterEveryRecordRemoved(t *testing.T) {
 // One record hidden: the set is not the one the log vouches for, and an
 // import is refused with NOT_READY until the store is fixed.
 func TestImportRefusedWhileLoadFailed(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	e.looseLoad = true
 	pka, pkb, _ := historyPair(t, e)
 	blobb, _ := e.store.Get(shareKey(pkb))
@@ -723,7 +723,7 @@ func TestImportRefusedWhileLoadFailed(t *testing.T) {
 // set either), and refuses imports. The records readable again, the
 // next start takes the one-time reset and loads them.
 func TestNilSetUnreadableRecordsNotReady(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	e.looseLoad = true
 	pka, pkb, _ := historyPair(t, e)
 	e.signer.Close()
@@ -765,7 +765,7 @@ func TestNilSetUnreadableRecordsNotReady(t *testing.T) {
 // signer: ready, and its first import goes through and is vouched for at
 // the next start.
 func TestNilSetEmptyStoreIsFresh(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	if recs := e.records(); recs[len(recs)-1].Shares != nil {
 		t.Fatalf("a new log's record carries share set %+v", recs[len(recs)-1].Shares)
 	}
@@ -787,7 +787,7 @@ func TestNilSetEmptyStoreIsFresh(t *testing.T) {
 // but it commits nothing, so the records put back load at the next
 // start, through the one-time reset.
 func TestNilSetDeletedRecordsLoadAtReset(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	e.looseLoad = true
 	pka, pkb, _ := historyPair(t, e)
 	bloba, _ := e.store.Get(shareKey(pka))
@@ -826,7 +826,7 @@ func TestNilSetDeletedRecordsLoadAtReset(t *testing.T) {
 // that leaves one listed share out is refused. The keys load and sign
 // after a restart.
 func TestBatchOfEveryListedKeyReplacesTheSet(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	e.looseLoad = true
 	pka, pkb, _ := historyPair(t, e)
 	ska, skb := e.secretOf(pka), e.secretOf(pkb)
@@ -871,7 +871,7 @@ func TestBatchOfEveryListedKeyReplacesTheSet(t *testing.T) {
 // The same with every record listed but unreadable: the batch of every
 // listed share is taken, one that leaves a share out is refused.
 func TestBatchOfEveryListedKeyWhileRecordsHidden(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	e.looseLoad = true
 	pka, pkb, _ := historyPair(t, e)
 	ska, skb := e.secretOf(pka), e.secretOf(pkb)

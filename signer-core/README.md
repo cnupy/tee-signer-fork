@@ -144,8 +144,9 @@ slashing protection and policy. The secret can be a threshold share of
 that key; the signature is then a partial signature that verifies under
 `share_pubkey_out`.
 
-`sc_signer_add_validator_group(s, share_pubkey, share_secret, index,
-group_pubkey, out)` loads a share of a distributed validator whose other
+In the DVT build only (`make DVT=1`, `-DSC_DVT`; the default build has
+none of it), `sc_signer_add_validator_group(s, share_pubkey, share_secret,
+index, group_pubkey, out)` loads a share of a distributed validator whose other
 shares the core does not see (an Obol Charon cluster) under the share's own
 key, which the client's requests name. The aggregate and contribution calls
 then check the selection proof in the message against `group_pubkey`, the
@@ -358,8 +359,8 @@ core does not parse JSON; the caller does.
   but a validator loaded with an index signs an exit only for that index.
 - ValidatorRegistration only with `fee_recipient` in `fee_recipients`,
   `gas_limit` in `[gas_limit_min, gas_limit_max]`, `pubkey` equal to the
-  signing validator or, for one loaded with a group key, to the group key
-  (a Charon client registers the group key), and, if `registration_max_future_seconds` is non-zero,
+  signing validator or, in the DVT build, for one loaded with a group key,
+  to the group key (a Charon client registers the group key), and, if `registration_max_future_seconds` is non-zero,
   a timestamp no further than that ahead of the clock.
 - If a validator was loaded with an index, block `proposer_index` and exit
   `validator_index` must match it.

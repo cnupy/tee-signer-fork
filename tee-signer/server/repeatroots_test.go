@@ -15,7 +15,7 @@ import (
 // floor, also with a record for that vote that an older build left under
 // rr/ (-persist-repeat-root, now removed).
 func TestReimportWithoutHistoryIgnoresOldRepeatRoot(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	sk, pk := newKey(t)
 	if err := e.importSealed(pk, sk, 10, nil); err != nil {
 		t.Fatal(err)

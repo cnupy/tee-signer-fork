@@ -111,6 +111,15 @@ t_measurements() {
   refuses "measurements: refuses a --chain the lane was not built for" "--chain is 'mainnet', the lane was built with 'hoodi'" python3 -I "$m" "${args[@]}" "$d/chain.txt"
   fingerprints "$d/runner.txt" nitro.runner not-a-hash
   refuses "measurements: refuses a runner value that is not 64 hex" "nitro.runner is missing or not 64 hex" python3 -I "$m" "${args[@]}" "$d/runner.txt"
+  # The build variant (DVT): a file without its line is of a default lane.
+  expect "measurements: a file without build_variant is a default lane" 0 python3 -I "$m" "${args[@]}" "$d/good.txt"
+  says "measurements: output names the build variant default" '"build_variant": "default"'
+  fingerprints "$d/dvt.txt" build_variant dvt
+  refuses "measurements: refuses a dvt lane as default" "--build-variant is 'default', the lane was built with 'dvt'" python3 -I "$m" "${args[@]}" "$d/dvt.txt"
+  expect "measurements: a dvt lane with --build-variant dvt" 0 python3 -I "$m" "${args[@]}" --build-variant dvt "$d/dvt.txt"
+  says "measurements: output names the build variant dvt" '"build_variant": "dvt"'
+  fingerprints "$d/default.txt" build_variant default
+  refuses "measurements: refuses a default lane as dvt" "--build-variant is 'dvt', the lane was built with 'default'" python3 -I "$m" "${args[@]}" --build-variant dvt "$d/default.txt"
 
   # The built images against the variant.
   local never always stdio_off stdio_on
@@ -281,7 +290,7 @@ EOF
     : >"$TMP/docker.log"
     rm -rf "$d/dist"
     for p in $hide; do mv "$hostbin/$p" "$TMP/hidden/"; done
-    (cd "${cwd:-$d/repo}" && env -u SIGNER_BUILDER_IMAGE DOCKER_LOG="$TMP/docker.log" FAKE_ID="$id" \
+    (cd "${cwd:-$d/repo}" && env -u SIGNER_BUILDER_IMAGE -u DVT DOCKER_LOG="$TMP/docker.log" FAKE_ID="$id" \
       FAKE_DRIVER_STATUS='[["driver-type","io.containerd.snapshotter.v1"]]' FAKE_UNSHARE_FAIL= FAKE_UNAME=x86_64 \
       FAKE_RUN_OK= FAKE_SBOM_EMPTY= PATH="$hostbin" "$@" \
       bash "$d/repo/release/release-build.sh" "${dist:-$d/dist}") >"$TMP/out" 2>&1 || rc=$?
@@ -372,6 +381,23 @@ EOF
   cwd="$d/repo/sub" dist=out
   lane "release-build: a relative DIST is relative to the caller's folder" end FAKE_RUN_OK=1
   if [ "$(grep -c '\.spdx\.json$' "$d/repo/sub/out/SHA256SUMS" 2>/dev/null)" = 8 ]; then ok "release-build: the SBOMs of a relative DIST are in it"; else bad "release-build: the SBOMs of a relative DIST are in it: no SHA256SUMS with 8 SBOMs in $d/repo/sub/out"; fi
+  # The dvt lane: built on DVT=1 only, and its outputs name it.
+  repo full
+  lane "release-build: a lane without DVT builds the default variant" end FAKE_RUN_OK=1
+  if grep -qx 'build_variant default' "$d/dist/fingerprints-mainnet.txt" 2>/dev/null; then ok "release-build: the default lane's fingerprints say build_variant default"; else bad "release-build: the default lane's fingerprints say build_variant default"; fi
+  if ! grep -q dvt "$d/dist/SHA256SUMS" 2>/dev/null && [ -s "$d/dist/SHA256SUMS" ]; then ok "release-build: no default output is named dvt"; else bad "release-build: no default output is named dvt"; fi
+  if grep 'scripts/build-core.sh' "$TMP/docker.log" | grep -q -- '-e DVT '; then ok "release-build: the core build gets DVT"; else bad "release-build: the core build gets DVT: $(grep build-core "$TMP/docker.log")"; fi
+  repo full
+  lane "release-build: DVT=1 builds the dvt lane" end FAKE_RUN_OK=1 DVT=1
+  if grep -qx 'build_variant dvt' "$d/dist/fingerprints-mainnet-dvt.txt" 2>/dev/null; then ok "release-build: the dvt lane's fingerprints say build_variant dvt"; else bad "release-build: the dvt lane's fingerprints say build_variant dvt: $(tail -n 2 "$TMP/out")"; fi
+  local f
+  for f in runner-aws-dvt-mainnet-dvt-linux-arm64 runner-gcp-dvt-mainnet-dvt-linux-amd64 runner-aws-mainnet-dvt-aarch64.eif runner-gcp-mainnet-dvt.oci.tar; do
+    if [ -s "$d/dist/$f" ]; then ok "release-build: the dvt lane ships $f"; else bad "release-build: the dvt lane ships $f"; fi
+  done
+  if [ "$(awk '{print $2}' "$d/dist/SHA256SUMS" 2>/dev/null | grep -vc dvt)" = 0 ]; then ok "release-build: every dvt output is named dvt"; else bad "release-build: every dvt output is named dvt: $(awk '{print $2}' "$d/dist/SHA256SUMS" 2>/dev/null | grep -v dvt | head -n 3 | tr '\n' ' ')"; fi
+  repo
+  lane "release-build: refuses DVT=yes" stop DVT=yes
+  says "release-build: says DVT is 0 or 1" "DVT must be 0 or 1"
   repo full
   lane "release-build: refuses an empty SBOM" late FAKE_RUN_OK=1 FAKE_SBOM_EMPTY=1
   says "release-build: names the missing SBOM" "SBOM .*\.spdx\.json"

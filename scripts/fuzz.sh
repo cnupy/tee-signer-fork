@@ -56,10 +56,13 @@ fi
 : >"$LOGS/fuzz.log"
 n=0
 # The runner's targets build with the dev release build's tags (the files
-# behind !debugimport, FuzzSlashingModel in tee-signer/server, exist).
+# behind !debugimport, FuzzSlashingModel in tee-signer/server, exist). With
+# DVT=1 the runner and the core binding get the tag dvt (the nightly DVT
+# run).
 tags_of() {
   case "$1" in
-    tee-signer) runner_tags runner-dev ;;
+    tee-signer) if [ "$DVT" = 1 ]; then runner_tags runner-dev-dvt; else runner_tags runner-dev; fi ;;
+    signer-core) [ "$DVT" = 0 ] || echo dvt ;;
     platform-aws) echo platform_aws ;;
     platform-azure) echo platform_azure ;;
     platform-gcp) echo platform_gcp ;;

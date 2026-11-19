@@ -7,6 +7,7 @@
 #   FUZZ_TARGETS="signer bls"   a subset (default: every target)
 #   FUZZ_JOBS=N                 targets run at once (default: nproc, at most 8)
 #   FUZZ_ENGINE=libfuzzer|driver|auto   passed to make (default auto)
+#   DVT=1                       the DVT build's targets (make DVT=1), under build/<arch>-dvt/fuzz/
 # Outputs under build/<arch>/fuzz/: corpus/<target>/ (grows across runs),
 # artifacts-<mode>/<target>/ (crash inputs; ci clears its own), logs/<target>.log, summary.txt.
 # Exits non-zero if any target crashed or a regression input fails.
@@ -20,7 +21,7 @@ case "$MODE" in
   replay) SECONDS_PER=0 ;;
   *) echo "usage: $0 [ci|long|replay]" >&2; exit 2 ;;
 esac
-FB="$CORE_DIR/build/$HOST_ARCH/fuzz"
+FB="$CORE_DIR/build/$HOST_ARCH$([ "${DVT:-0}" != 1 ] || echo -dvt)/fuzz"
 REGRESS="$CORE_DIR/fuzz/regress"
 ART="$FB/artifacts-$MODE"
 JOBS="${FUZZ_JOBS:-$(nproc)}"

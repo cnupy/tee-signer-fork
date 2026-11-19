@@ -145,6 +145,9 @@ func readSetup(ctx context.Context, ch setup.Channel, platformName string) (*set
 	if err := st.Wire.Locked.CheckFeatures(server.KnownFeatures); err != nil {
 		return nil, fmt.Errorf("setup refused: %w", err)
 	}
+	if err := server.CheckSigningMode(st.Wire.SigningMode); err != nil {
+		return nil, fmt.Errorf("setup refused: %w", err)
+	}
 	return st, nil
 }
 

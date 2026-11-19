@@ -146,6 +146,9 @@ type env struct {
 	srv    *Server
 	sk     [32]byte
 	pk     backend.Pubkey
+	// group is the validator's group key under signing_mode = dv_share
+	// (the dvt build), nil in the other modes.
+	group *backend.Pubkey
 	// tamper goes to the log of every start (flakyLog.tamper).
 	tamper func(g setupwire.Group, v uint64, raw []byte) []byte
 	// time is the clock the updates give the time values (nil: none), and
@@ -182,10 +185,17 @@ func newEnv(t *testing.T, lock *uint64) *env {
 	return newEnvWith(t, lock, nil)
 }
 
-// newEnvWith is newEnv with change applied to the setup first.
+// newEnvWith is newEnv with change applied to the setup first. The dvt
+// build runs dv_share setups only, so there the setup is the threshold dev
+// sample with signing_mode = dv_share, and the validator a share with a
+// group key.
 func newEnvWith(t *testing.T, lock *uint64, change func(s *setupwire.Setup)) *env {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join("..", "..", "governance", "setupwire", "testdata", "setup-dev-single.bin"))
+	sample := "setup-dev-single"
+	if dvtBuild() {
+		sample = "setup-dev-threshold"
+	}
+	raw, err := os.ReadFile(filepath.Join("..", "..", "governance", "setupwire", "testdata", sample+".bin"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,9 +205,13 @@ func newEnvWith(t *testing.T, lock *uint64, change func(s *setupwire.Setup)) *en
 	}
 	s.Locked.Approvers, s.Locked.ChangeDelaySeconds = approverSet(2, 1, 2, 3), lock
 	s.SlashingLogMinLockDays = 100
+	if dvtBuild() {
+		s.SigningMode = setupwire.SigningModeDVShare
+	}
 	if change != nil {
 		change(s)
 	}
+	skipUnlessVariantRuns(t, s.SigningMode)
 	if raw, err = s.Encode(); err != nil {
 		t.Fatal(err)
 	}
@@ -205,6 +219,11 @@ func newEnvWith(t *testing.T, lock *uint64, change func(s *setupwire.Setup)) *en
 	pk, _ := core.PubkeyOf(sk)
 	e := &env{t: t, raw: raw, setup: s, hash: mustHash(t, s), dir: t.TempDir(), sk: sk, pk: pk,
 		clock: &fakeClock{t: time.Unix(testGenesis+startEpoch*testEpoch+5, 0), trusted: true}}
+	if s.SigningMode == setupwire.SigningModeDVShare {
+		gsk, _ := software.NewSecret()
+		group, _ := core.PubkeyOf(gsk)
+		e.group = &group
+	}
 	e.start()
 	return e
 }
@@ -256,7 +275,13 @@ func (e *env) start() {
 	}
 	hooks.UseClock(e.signer.EpochAt)
 	t.Cleanup(e.signer.Close)
-	if _, err := e.signer.AddValidator(e.pk, e.sk, 7, nil); err != nil {
+	if e.group != nil {
+		// A dv_share key loads with its group key, as a start loads it.
+		sk := e.sk
+		if _, err := (&Server{Signer: e.signer}).addValidator(e.pk, &sk, 7, nil, e.group); err != nil {
+			t.Fatal(err)
+		}
+	} else if _, err := e.signer.AddValidator(e.pk, e.sk, 7, nil); err != nil {
 		t.Fatal(err)
 	}
 	e.upd.Attach(e.signer)

@@ -20,6 +20,7 @@ import (
 	"github.com/lidofinance/tee-signer/signer-protocol"
 	"github.com/lidofinance/tee-signer/signer-protocol/transport"
 	"github.com/lidofinance/tee-signer/tee-signer/attls"
+	"github.com/lidofinance/tee-signer/tee-signer/server"
 )
 
 var quietLog = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -51,8 +52,34 @@ func TestChainMarkHasRoot(t *testing.T) {
 }
 
 // sampleSetup is the sample setup setup-<name> of governance/setupwire
-// (nitro, azure, gcp, dev-single, ...).
+// (nitro, azure, gcp, dev-single, ...). The samples are threshold and
+// single setups, which the dvt build does not run (server.CheckSigningMode):
+// there it is the sample with signing_mode = dv_share, so the start checks
+// run on the setup a dvt image starts from.
 func sampleSetup(t *testing.T, name string) []byte {
+	t.Helper()
+	b := sampleSetupFile(t, name)
+	s, err := setupwire.DecodeSetup(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if server.CheckSigningMode(s.SigningMode) == nil {
+		return b
+	}
+	s.SigningMode = setupwire.SigningModeDVShare
+	s.Platform.SealingKeyRelease.UnsafeSingleKeyAccepted = false // for signing_mode = single only
+	if b, err = s.Encode(); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.CheckSigningMode(s.SigningMode); err != nil {
+		t.Fatalf("%s build: %v", server.Variant, err)
+	}
+	return b
+}
+
+// sampleSetupFile is the sample as it is, for the tests of the variants'
+// signing modes.
+func sampleSetupFile(t *testing.T, name string) []byte {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("..", "governance", "setupwire", "testdata", "setup-"+name+".bin"))
 	if err != nil {

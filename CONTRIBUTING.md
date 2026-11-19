@@ -43,7 +43,12 @@ Every commit is signed (GPG or SSH, with a key on your GitHub account).
   On a pull request the `aws-terraform` job runs `scripts/tf-validate.sh`
   and `scripts/aws-tf-test.sh` (a mock provider, no AWS account) only when
   a file under `platform-aws/deploy/` other than docs changes, or those
-  scripts. A nightly run (`fuzz-nightly.yml`) fuzzes every target for 30 s.
+  scripts. The `dvt` job (`make test-dvt`) tests the dvt variant beside
+  the other jobs, which build the default variant only; it has work only
+  when signer-core, the runner module (`tee-signer/`), signer-protocol,
+  the import order, the setup format, the gateway, the signer-admin
+  dv-split, `release/` or the variants' build scripts change (`CI_DVT`). A nightly run (`fuzz-nightly.yml`) fuzzes every target for
+  30 s, and its `fuzz-dvt` job the dvt variant's.
 - Get at least one reviewer approval. The author does not count.
 - Squash when merging; the final commit follows the rules above.
 

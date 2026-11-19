@@ -1,3 +1,5 @@
+//go:build dvt
+
 package core_test
 
 import (

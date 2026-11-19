@@ -1,5 +1,8 @@
 # Every fuzz target of main, each for longer than on a pull request: the
 # Go targets for 30 s, the C targets (signer-core, markformat) for 30 s.
+# Job fuzz-dvt fuzzes the dvt variant (DVT=1) the same way: the C targets
+# of the DVT core build and the Go targets of signer-core and tee-signer
+# with the tag dvt. Pull requests do not fuzz the dvt variant.
 # Runs nightly and by hand (workflow_dispatch). On a failure the logs and
 # any new input under testdata/fuzz are uploaded as an artifact.
 name: fuzz-nightly
@@ -59,3 +62,43 @@ jobs:
             logs/
             signer-core/build/*/fuzz/logs/
             signer-core/build/*/fuzz/artifacts-ci/
+
+  fuzz-dvt:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      DVT: "1"
+      # The modules with dvt code (scripts/fuzz.sh tags them dvt).
+      FUZZ_MODULES: signer-core tee-signer
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.26.x"
+          cache: false
+      - run: bash scripts/deps.sh
+      # The vectors come from their pinned releases (sha256 checked).
+      - run: bash signer-core/scripts/fetch.sh
+      - run: make fuzz FUZZ_TIME=30s
+      # The C targets of the DVT core build, even when a Go target failed.
+      - if: ${{ !cancelled() }}
+        run: FUZZ_SECONDS=30 bash signer-core/scripts/fuzz.sh ci
+      - if: failure()
+        run: |
+          mkdir -p logs/new-inputs
+          git ls-files --others --exclude-standard -- '*testdata/fuzz/*' |
+            while read -r f; do
+              mkdir -p "logs/new-inputs/$(dirname "$f")"
+              cp "$f" "logs/new-inputs/$f"
+            done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: fuzz-nightly-dvt-logs
+          path: |
+            logs/
+            signer-core/build/*-dvt/fuzz/logs/
+            signer-core/build/*-dvt/fuzz/artifacts-ci/

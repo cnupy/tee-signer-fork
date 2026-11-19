@@ -26,13 +26,14 @@ type dvRun struct {
 
 // startDVRun starts the runner of dvRun: a setup that says
 // signing_mode = dv_share, dv-split from the lock, import-draft and two
-// approvers. SIGNER_ADMIN_RUNNER names a dev runner binary of this repo;
-// without it the test is skipped.
+// approvers. SIGNER_ADMIN_DVT_RUNNER names a dev runner binary of this
+// repo built with the tag dvt (a default runner refuses a dv_share setup);
+// without it the test is skipped. make test-dvt sets it.
 func startDVRun(t *testing.T) *dvRun {
 	t.Helper()
-	bin := os.Getenv("SIGNER_ADMIN_RUNNER")
+	bin := os.Getenv("SIGNER_ADMIN_DVT_RUNNER")
 	if bin == "" {
-		t.Skip("SIGNER_ADMIN_RUNNER is not set (a dev runner binary of this repo)")
+		t.Skip("SIGNER_ADMIN_DVT_RUNNER is not set (a dev runner binary of this repo built with -tags dvt)")
 	}
 	dir := t.TempDir()
 	pki, ca, cert, key := clientPKIWith(t, dir)

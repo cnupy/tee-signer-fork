@@ -169,6 +169,7 @@ func newTgtEnvOf(t *testing.T, sample, platName string, change func(s *setupwire
 	if change != nil {
 		change(s)
 	}
+	skipUnlessVariantRuns(t, s.SigningMode)
 	if raw, err = s.Encode(); err != nil {
 		t.Fatal(err)
 	}

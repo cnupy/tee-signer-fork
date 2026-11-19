@@ -197,6 +197,9 @@ func NewUpdates(o UpdatesOptions) (*Updates, error) {
 	if o.Setup == nil || o.Log == nil || o.Clock == nil {
 		return nil, errors.New("config updates: setup, mark log and clock are required")
 	}
+	if err := CheckSigningMode(o.Setup.SigningMode); err != nil {
+		return nil, fmt.Errorf("config updates: %w", err)
+	}
 	if o.Logger == nil {
 		o.Logger = slog.Default()
 	}

@@ -48,7 +48,7 @@ func TestPanicInAStateChangingRequestRefusesUntilRestart(t *testing.T) {
 	changing := []wire.MsgType{wire.TypeSign, wireadmin.TypeImportSealed, wireadmin.TypeConfigUpdate}
 	for _, pt := range changing {
 		t.Run(pt.String(), func(t *testing.T) {
-			e := newTgtEnv(t, "dev", nil)
+			e := newVariantEnv(t, "dev", nil)
 			sk, pk := newKey(t)
 			if err := e.importSealed(pk, sk, 5, nil); err != nil {
 				t.Fatal(err)
@@ -94,7 +94,7 @@ func TestPanicInAStateChangingRequestRefusesUntilRestart(t *testing.T) {
 func TestPanicInAReadOnlyRequestOnlyClosesItsConnection(t *testing.T) {
 	for _, pt := range []wire.MsgType{wire.TypeHealth, wire.TypePublicKeys, wire.TypeAttest, wire.TypeIdentity} {
 		t.Run(pt.String(), func(t *testing.T) {
-			e := newTgtEnv(t, "dev", nil)
+			e := newVariantEnv(t, "dev", nil)
 			sk, pk := newKey(t)
 			if err := e.importSealed(pk, sk, 5, nil); err != nil {
 				t.Fatal(err)

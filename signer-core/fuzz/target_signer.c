@@ -17,7 +17,17 @@
  *  - no signed attestation, block, PTC vote or envelope has a slot that
  *    has not started at the clock + SC_SLOT_MARGIN_SECONDS (the slot rule);
  *  - with flag F_VERIFY, attestation and block signatures verify under the
- *    share key over the signing root sc_signer_signing_root gives.
+ *    share key over the signing root sc_signer_signing_root gives;
+ *  - an aggregate or contribution whose selection proof the target made
+ *    signs only if the proof is by the validator's selection key (its group
+ *    key in the DVT build, else its own key), and one by that key, sent
+ *    unchanged, never fails with SC_ERR_SELECTION_PROOF;
+ *  - a registration that names a key the validator may name (its own, or
+ *    its group key in the DVT build) never fails with SC_ERR_POLICY_PUBKEY,
+ *    and one that names another key never signs.
+ * In the DVT build validators load through sc_signer_add_validator_group
+ * with a group key OP_ADD picks: one no validator uses, another validator's
+ * key, the own key, none, or bytes that are no G1 point.
  * Stored records only change through the core, so rollback is out of scope;
  * preloaded marks come only before a validator's first signature.
  *
@@ -40,6 +50,23 @@
 
 static uint8_t g_sk[NV][32], g_pk[NV][48];
 static uint8_t g_scratch[SC_TYPED_SCRATCH_LEN];
+
+#ifdef SC_DVT
+/* DVT build only: the group key a validator loads with
+ * (sc_signer_add_validator_group), picked by OP_ADD. Most often a group key
+ * of its own (g_gpk), which no validator is loaded under; else another
+ * validator's key, its own key, none (NULL: the plain loader) or bytes that
+ * are no G1 point. Selection proofs then verify under the group key, and a
+ * registration may name it. Choices below GROUP_OTHER are the fresh key. */
+enum { GROUP_OTHER = 4, GROUP_SELF, GROUP_NONE, GROUP_BAD, GROUP_CHOICES };
+static uint8_t g_gsk[NV][32], g_gpk[NV][48];
+static const uint8_t g_bad_point[48] = {0x9f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                                        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                                        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                                        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                                        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                                        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+#endif
 
 typedef struct {
     uint8_t enc[SC_WATERMARK_ENCODED_LEN];
@@ -84,6 +111,7 @@ typedef struct {
     int added[NV];       /* added once: re-added after a restart */
     uint8_t secret[NV];  /* index into g_sk of the loaded secret */
     uint64_t index[NV];  /* bound validator index */
+    uint8_t group[NV];   /* DVT build: the group key choice it loaded with */
     uint8_t share[NV][48];
     int signed_any[NV];
     int any_signed;
@@ -208,17 +236,78 @@ static void stop_signer(void)
     W.s = NULL;
 }
 
-static void add(int v, int secret, uint64_t index)
+#ifdef SC_DVT
+/* The group key of choice c for validator v (NULL for GROUP_NONE). */
+static const uint8_t *group_pk(int v, int c)
+{
+    switch (c) {
+    case GROUP_OTHER: return g_pk[(v + 1) % NV];
+    case GROUP_SELF: return g_pk[v];
+    case GROUP_NONE: return NULL;
+    case GROUP_BAD: return g_bad_point;
+    default: return g_gpk[v];
+    }
+}
+#endif
+
+/* The key a selection proof of validator v must verify under: its group
+ * key if it has one (DVT build), else its own key. */
+static const uint8_t *selection_pk(int v)
+{
+#ifdef SC_DVT
+    const uint8_t *g = group_pk(v, W.group[v]);
+    if (g)
+        return g;
+#endif
+    return g_pk[v];
+}
+
+/* The secret behind selection_pk(v). */
+static const uint8_t *selection_sk(int v)
+{
+#ifdef SC_DVT
+    switch (W.group[v]) {
+    case GROUP_OTHER: return g_sk[(v + 1) % NV];
+    case GROUP_SELF:
+    case GROUP_NONE: return g_sk[v];
+    default: return g_gsk[v];
+    }
+#else
+    return g_sk[v];
+#endif
+}
+
+/* A registration of validator v may name pk: its own key, or in the DVT
+ * build its group key. */
+static int registration_ok(int v, const uint8_t pk[48])
+{
+    return !memcmp(pk, g_pk[v], 48) || !memcmp(pk, selection_pk(v), 48);
+}
+
+/* group: the group key choice (DVT build; the default build ignores it). */
+static void add(int v, int secret, uint64_t index, int group)
 {
     static const uint8_t zero[32];
     static const uint8_t big[32] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
     const uint8_t *sk = secret < NV ? g_sk[secret] : secret == NV ? zero : big;
     uint8_t share[48];
+#ifdef SC_DVT
+    int rc = sc_signer_add_validator_group(W.s, g_pk[v], sk, index, group_pk(v, group), share);
+#else
     int rc = sc_signer_add_validator(W.s, g_pk[v], sk, index, share);
+    (void)group;
+#endif
     if (g_trace)
-        fprintf(stderr, "  add v%d secret %d: %s\n", v, secret, sc_status_name(rc));
+        fprintf(stderr, "  add v%d secret %d group %d: %s\n", v, secret, group, sc_status_name(rc));
     FUZZ_CHECK(rc == SC_OK || rc == SC_ERR_DUPLICATE || rc == SC_ERR_NOMEM ||
                rc == SC_ERR_BAD_KEY || rc == SC_ERR_STORAGE || rc == SC_ERR_CLOCK);
+#ifdef SC_DVT
+    if (group == GROUP_BAD) {
+        /* The group key is checked first, and nothing loads. */
+        FUZZ_CHECK(rc == SC_ERR_BAD_KEY);
+        return;
+    }
+#endif
     if (W.loaded[v])
         FUZZ_CHECK(rc == SC_ERR_DUPLICATE);
     if (secret >= NV)
@@ -228,6 +317,7 @@ static void add(int v, int secret, uint64_t index)
     W.loaded[v] = W.added[v] = 1;
     W.secret[v] = (uint8_t)secret;
     W.index[v] = index;
+    W.group[v] = (uint8_t)group;
     memcpy(W.share[v], share, 48);
 }
 
@@ -238,7 +328,7 @@ static void restart(void)
         return;
     for (int v = 0; v < NV; v++)
         if (W.added[v])
-            add(v, W.secret[v], W.index[v]);
+            add(v, W.secret[v], W.index[v], W.group[v]);
 }
 
 /* ---- pickers ------------------------------------------------------------- */
@@ -544,24 +634,52 @@ static void op_builder_auth(fz_in *in, int v)
     free(copy);
 }
 
-/* A selection proof the validator key makes for (domain, epoch, root). */
-static void make_proof(int v, const uint8_t domain[4], uint64_t epoch, const uint8_t obj[32],
-                       uint8_t proof[96])
+/* A selection proof that secret sk makes for (domain, epoch, root). Returns
+ * 0, with junk bytes in proof, when the signing root is not defined. */
+static int make_proof(const uint8_t sk[32], const uint8_t domain[4], uint64_t epoch,
+                      const uint8_t obj[32], uint8_t proof[96])
 {
     uint8_t root[32];
     memset(proof, 0x99, 96);
-    if (sc_signer_signing_root(W.s, domain, epoch, obj, root) == SC_OK)
-        FUZZ_CHECK(sc_bls_sign(g_sk[v], root, 32, proof) == SC_OK);
+    if (sc_signer_signing_root(W.s, domain, epoch, obj, root) != SC_OK)
+        return 0;
+    FUZZ_CHECK(sc_bls_sign(sk, root, 32, proof) == SC_OK);
+    return 1;
 }
 
-/* Applies k byte patches to buf. */
-static void patch_bytes(fz_in *in, uint8_t *buf, size_t len)
+/* The secret a selection proof of v is made with: its own key when bit
+ * 0x02 of sel is set, else the key of selection_pk(v). In the DVT build
+ * the own key is the wrong one unless v has no other group key. *right
+ * says whether the proof must verify. */
+static const uint8_t *proof_sk(int v, uint8_t sel, int *right)
 {
-    uint8_t k = fz_u8(in) % 4;
-    for (uint8_t i = 0; i < k && len; i++) {
+    *right = !(sel & 0x02) || !memcmp(g_pk[v], selection_pk(v), 48);
+    return sel & 0x02 ? g_sk[v] : selection_sk(v);
+}
+
+/* The selection proof oracle of an aggregate or contribution of v whose
+ * proof the target made (made): one by a key other than selection_pk(v)
+ * never signs, and one by that key, sent unchanged, never fails the
+ * proof check. */
+static void check_proof(int rc, int made, int right, int unchanged)
+{
+    if (!made)
+        return;
+    if (!right)
+        FUZZ_CHECK(rc != SC_OK);
+    else if (unchanged)
+        FUZZ_CHECK(rc != SC_ERR_SELECTION_PROOF);
+}
+
+/* Applies k byte patches to buf and returns how many it applied. */
+static int patch_bytes(fz_in *in, uint8_t *buf, size_t len)
+{
+    uint8_t k = fz_u8(in) % 4, i;
+    for (i = 0; i < k && len; i++) {
         size_t at = fz_u16(in) % len;
         buf[at] = fz_u8(in);
     }
+    return i;
 }
 
 static void op_aggregate(fz_in *in, int v)
@@ -572,6 +690,7 @@ static void op_aggregate(fz_in *in, int v)
     int form = fz_u8(in);
     const sc_preset *p = sel & 1 ? &SC_PRESET_MINIMAL : &SC_PRESET_MAINNET;
     size_t n;
+    int made = 0, right = 0;
 
     if (form >= 0xf0)
         form = (int)(int8_t)form; /* a negative int, as a bad caller might pass */
@@ -594,8 +713,9 @@ static void op_aggregate(fz_in *in, int v)
         if (sel & 0x40)
             fz_bytes(g_bulk, ssz + 12, 96);
         else
-            make_proof(v, sel_domain, W.cfg.slots_per_epoch ? slot / W.cfg.slots_per_epoch : 0,
-                       obj, ssz + 12);
+            made = make_proof(proof_sk(v, sel, &right), sel_domain,
+                              W.cfg.slots_per_epoch ? slot / W.cfg.slots_per_epoch : 0, obj,
+                              ssz + 12);
         n = 108;
         if (form == SC_AGGREGATE_PHASE0)
             cb = 0;
@@ -611,13 +731,14 @@ static void op_aggregate(fz_in *in, int v)
         ssz[n + bits - 1] |= 0x80; /* delimiter */
         n += bits;
     }
-    patch_bytes(in, ssz, n);
     {
+        int unchanged = patch_bytes(in, ssz, n) == 0;
         uint8_t *copy = fz_dup(ssz, n);
         int rc = sc_sign_aggregate_and_proof(W.s, g_pk[v], copy, n, form, p, g_scratch, sig, sr);
         check_status(rc);
         if (form < 0 || form > 2)
             FUZZ_CHECK(rc != SC_OK);
+        check_proof(rc, made, right, unchanged);
         free(copy);
     }
 }
@@ -630,6 +751,7 @@ static void op_contribution(fz_in *in, int v)
     const sc_preset *p = sel & 1 ? &SC_PRESET_MINIMAL : &SC_PRESET_MAINNET;
     size_t n = sc_contribution_and_proof_len(p), bl = n - 8 - 48 - 96 - 96;
     uint64_t slot = pick_slot(in), sub = fz_u8(in) % 6;
+    int made = 0, right = 0, unchanged;
 
     FUZZ_CHECK(n <= sizeof ssz);
     memset(ssz, 0, sizeof ssz);
@@ -643,14 +765,17 @@ static void op_contribution(fz_in *in, int v)
     if (sel & 0x40)
         fz_bytes(g_bulk, ssz + 56 + bl + 96, 96);
     else
-        make_proof(v, sel_domain, W.cfg.slots_per_epoch ? slot / W.cfg.slots_per_epoch : 0, obj,
-                   ssz + 56 + bl + 96);
+        made = make_proof(proof_sk(v, sel, &right), sel_domain,
+                          W.cfg.slots_per_epoch ? slot / W.cfg.slots_per_epoch : 0, obj,
+                          ssz + 56 + bl + 96);
     if (sel & 0x20)
         n = fz_u16(in) % sizeof ssz; /* a wrong length */
-    patch_bytes(in, ssz, n);
+    unchanged = patch_bytes(in, ssz, n) == 0 && !(sel & 0x20);
     {
         uint8_t *copy = fz_dup(ssz, n);
-        check_status(sc_sign_contribution_and_proof(W.s, g_pk[v], copy, n, p, sig, NULL));
+        int rc = sc_sign_contribution_and_proof(W.s, g_pk[v], copy, n, p, sig, NULL);
+        check_status(rc);
+        check_proof(rc, made, right, unchanged);
         free(copy);
     }
 }
@@ -885,6 +1010,12 @@ static void init_keys(void)
             g_sk[i][k] = (uint8_t)(0x21 * (k + 1) + 7 * i);
         g_sk[i][0] = (uint8_t)(0x10 + i); /* below the group order */
         FUZZ_CHECK(sc_bls_pubkey(g_sk[i], g_pk[i]) == SC_OK);
+#ifdef SC_DVT
+        for (int k = 0; k < 32; k++)
+            g_gsk[i][k] = (uint8_t)(0x35 * (k + 3) + 11 * i);
+        g_gsk[i][0] = (uint8_t)(0x20 + i);
+        FUZZ_CHECK(sc_bls_pubkey(g_gsk[i], g_gpk[i]) == SC_OK);
+#endif
     }
     done = 1;
 }
@@ -964,8 +1095,13 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         }
         case OP_ADD: {
             uint8_t sel = fz_u8(&a);
+#ifdef SC_DVT
+            int group = fz_u8(&a) % GROUP_CHOICES;
+#else
+            int group = 0;
+#endif
             add(v, sel < 0xf0 ? v : sel < 0xf8 ? (sel & 3) : NV + (sel & 1),
-                sel & 0x40 ? SC_INDEX_UNKNOWN : 100 + (uint64_t)v);
+                sel & 0x40 ? SC_INDEX_UNKNOWN : 100 + (uint64_t)v, group);
             break;
         }
         case OP_RESTART: restart(); break;
@@ -995,7 +1131,20 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             r.gas_limit = sel & 1 ? fz_u64(&a) : 30000000 + (uint64_t)fz_u8(&a) * 1000000;
             r.timestamp = sel & 2 ? fz_u64(&a) : W.host.now + (uint64_t)(int64_t)(int16_t)fz_u16(&a);
             memcpy(r.pubkey, g_pk[sel & 4 ? (v + 1) % NV : v], 48);
-            check_status(sc_sign_validator_registration(W.s, g_pk[v], &r, sig));
+#ifdef SC_DVT
+            if (sel & 8)
+                memcpy(r.pubkey, group_pk(v, W.group[v]) ? group_pk(v, W.group[v]) : g_gpk[v], 48);
+#endif
+            {
+                int rc = sc_sign_validator_registration(W.s, g_pk[v], &r, sig);
+                check_status(rc);
+                /* The pubkey check comes first: a key the validator may
+                 * name never fails it, and another never signs. */
+                if (registration_ok(v, r.pubkey))
+                    FUZZ_CHECK(rc != SC_ERR_POLICY_PUBKEY);
+                else
+                    FUZZ_CHECK(rc != SC_OK);
+            }
             break;
         }
         case OP_PTC: op_ptc(&a, v); break;

@@ -163,7 +163,8 @@ make release-gate  # the release gate: self-test, tree check, every runner build
 | --- | --- |
 | `deps.sh` | apt: build tools, cross gcc for the other arch, qemu-user, qemu-user-static (for the arm64 EIF), openssl, jq. Checks Go and Docker. |
 | `fetch.sh` | blst (and aws-nitro-enclaves-cli for the EIF) into `third_party/`, pinned by commit |
-| `build-core.sh` | copies signer-core's `include/` and `src/` into `build/core-src/`, builds `libsigner_core.a` and `libblst.a` per arch |
+| `build-core.sh` | copies signer-core's `include/` and `src/` into `build/core-src/`, builds `libsigner_core.a` and `libblst.a` per arch; with `DVT=1` the DVT core `libsigner_core_dvt.a` (`-DSC_DVT`); checks with `nm` that each core archive matches its variant |
+| `dvt-test.sh` | the variant checks: names per variant, both cores, no dv_share code in a default runner, no runner linked against the other variant's core; `make test-dvt` adds the dvt Go tests and the DVT core's C suites |
 | `build-nts.sh` | the Rust NTS library `libsigner_nts.a` per arch (`trusted-time`) |
 | `build-runner.sh` | the static runners above and the Nitro parent-side programs, checked with `file`, the dependency check and the release gate |
 | `check-deps.sh` | the dependency check (above) |

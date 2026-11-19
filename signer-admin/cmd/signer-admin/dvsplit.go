@@ -24,7 +24,7 @@ import (
 // its n shares (public_shares, share index i + 1 at position i), and the
 // cluster's threshold t. dv-split turns that into the split file that
 // import-draft and import read: the commitments come from the first t
-// public shares (threshold.Commitments), and every one of the n public
+// public shares (commitmentsFromShares), and every one of the n public
 // shares and the group key must agree with them, or nothing is written.
 // The lock's signatures and lock_hash are not checked: the admin vouches
 // for the file, and the approvers sign the commitments hash it gives.
@@ -73,7 +73,7 @@ func dvSplit(path string) (*splitFile, error) {
 			return nil, fmt.Errorf("%s: validator %s is listed twice", path, dv.Group)
 		}
 		seen[dv.Group] = true
-		comm, err := threshold.Commitments(ids, dv.Shares[:t])
+		comm, err := commitmentsFromShares(ids, dv.Shares[:t])
 		if err != nil {
 			return nil, fmt.Errorf("%s: validator %s: %w", path, dv.Group, err)
 		}

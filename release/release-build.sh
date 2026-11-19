@@ -2,6 +2,7 @@
 # One build lane of a release, and the command an approver runs to rebuild a release on their own machine:
 #
 #   CHAIN=mainnet IMAGE_VARIANT=prod release/release-build.sh DIST
+#   CHAIN=mainnet IMAGE_VARIANT=prod DVT=1 release/release-build.sh DIST   (the dvt lane)
 #
 # At the root of a clean checkout of the tagged commit. Steps:
 #   1. build the release builder image (release/builder.Dockerfile), no cache,
@@ -30,6 +31,11 @@
 # Variants. IMAGE_VARIANT changes the GCP and Azure images only (log
 # redirect and stdio); the Nitro EIF's measured content is the same in
 # both, so its PCRs are too. Of the names, only the DIST names carry -test. A mainnet lane is prod only.
+# DVT=1 builds the dvt lane, and only that setting does (scripts/common.sh):
+# the runners with the tag dvt, linked against the DVT core. Its runners,
+# images and DIST names carry -dvt, and its fingerprints file says
+# build_variant dvt (release/measurements.py --build-variant dvt). A lane
+# without DVT is the default variant and says build_variant default.
 #
 # Host prerequisites. The lane checks them before its first long step and
 # names the fix of each one that is missing; it installs nothing.
@@ -191,7 +197,7 @@ fi
 # links a host-arch runner (the no-platform-tag check) when it builds for
 # aarch64 only, and a fresh checkout has no host-arch core yet.
 docker run --rm --pull=never --network none --user "$(id -u):$(id -g)" -e HOME=/tmp \
-  -v "$ROOT:$ROOT" -w "$ROOT" "$SIGNER_BUILDER_IMAGE" bash scripts/build-core.sh x86_64 aarch64
+  -e DVT -v "$ROOT:$ROOT" -w "$ROOT" "$SIGNER_BUILDER_IMAGE" bash scripts/build-core.sh x86_64 aarch64
 
 bash scripts/generic-images.sh build "$BUILD/generic$(image_suffix)"
 
@@ -209,13 +215,15 @@ python3 -I release/image-variant.py "$IMAGE_VARIANT" "$BUILD/generic$sfx/fingerp
 # What a release ships, under names that carry the chain, and -test for a
 # test lane.
 c="$CHAIN"
-[ "$IMAGE_VARIANT" = prod ] || c="$CHAIN-$IMAGE_VARIANT"
+[ "$DVT" != 1 ] || c="$c-dvt"
+[ "$IMAGE_VARIANT" = prod ] || c="$c-$IMAGE_VARIANT"
 dist_free
 mkdir -p "$DIST"
 # The lane's own values, which release/measurements.py checks its arguments against.
 {
   cat "$BUILD/generic$sfx/fingerprints.txt"
   echo "variant $IMAGE_VARIANT"
+  echo "build_variant $(variant)"
   echo "commit $commit"
   echo "chain $CHAIN"
 } >"$DIST/fingerprints-$c.txt"

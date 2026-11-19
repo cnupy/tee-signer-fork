@@ -24,6 +24,10 @@
 #                            release builds with -tags nonprod,chain_<chain>:
 #                            governance times in minutes, that chain only
 #                            (signer-protocol/buildchain)
+#   with DVT=1, instead of the runners above (common.sh):
+#   runner-<cloud>[-<chain>]-dvt, runner-dev[-<chain>]-dvt
+#                            the dvt variant: -tags dvt (signing_mode
+#                            dv_share), linked against the DVT core
 #   hostagent                pure Go (Nitro parent side, tag platform_aws for vsock)
 #   forwarder                pure Go (Nitro parent side): TCP to vsock, no TLS
 #   udprelay                 pure Go (Nitro parent side): the NTS clock's NTP datagrams
@@ -144,6 +148,13 @@ for arch in "${archs[@]}"; do
           GOOS=linux GOARCH="$(goarch_of "$arch")" CGO_ENABLED=1             bash "$ROOT/scripts/release-gate.sh" deps "$ROOT/tee-signer" "netgo,osusergo,$(runner_tags "$name")" . ;;
       esac
     fi
+    # The dv_share code only in the dvt variant (tee-signer/server/dvshare.go).
+    if [ "$DVT" = 1 ]; then
+      has_string "$out/$name" 'server.(*Server).dvShare' yes "a dvt build has the dv_share code"
+    else
+      has_string "$out/$name" 'server.(*Server).dvShare' no "a default build has no dv_share code"
+      has_string "$out/$name" 'core.(*Signer).AddValidatorGroup' no "a default build has no group key loader"
+    fi
     # The chain of a non-prod build shows in HEALTH's version and the TLS
     # certificate's name.
     if ! chain_is_prod "$CHAIN"; then
@@ -189,8 +200,8 @@ for arch in "${archs[@]}"; do
   done
   # The old file name of the dev debug runner, as a copy that replaces the
   # old file in one step (a process that runs the old one keeps it). A
-  # non-prod run builds no debug runner.
-  if chain_is_prod "$CHAIN"; then
+  # non-prod or dvt run builds no debug runner.
+  if chain_is_prod "$CHAIN" && [ "$DVT" = 0 ]; then
     cp "$out/runner-dev-debugimport" "$out/.runner-debugimport.$$"
     mv -f "$out/.runner-debugimport.$$" "$out/runner-debugimport"
   fi
@@ -226,14 +237,17 @@ for arch in "${archs[@]}"; do
   for name in "${RUNNER_BINS[@]}" hostagent forwarder udprelay setup-tool; do
     license_bins+=("$out/$name")
   done
-  ! chain_is_prod "$CHAIN" || license_bins+=("$out/runner-debugimport")
+  ! chain_is_prod "$CHAIN" || [ "$DVT" = 1 ] || license_bins+=("$out/runner-debugimport")
   python3 "$ROOT/scripts/bundle-licenses.py" "${license_bins[@]}"
 done
 
 # A runner built without a platform tag must refuse to start, whatever the flags.
+# A dvt run has only the DVT core, so this runner gets the tag dvt there.
 notag="$(mktemp)"
 trap 'rm -f "$notag"' EXIT
-(cd "$ROOT/tee-signer" && CGO_ENABLED=1 CC="$(cc_for "$HOST_ARCH")" go build -trimpath -buildvcs=false -o "$notag" .)
+notag_tags=""
+[ "$DVT" = 0 ] || notag_tags=dvt
+(cd "$ROOT/tee-signer" && CGO_ENABLED=1 CC="$(cc_for "$HOST_ARCH")" go build -trimpath -buildvcs=false -tags "$notag_tags" -o "$notag" .)
 if msg="$("$notag" -platform dev 2>&1)"; then
   echo "a runner built without a platform tag started" >&2
   exit 1

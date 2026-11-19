@@ -179,17 +179,82 @@ if ! chain_is_prod "$CHAIN"; then
   RUNNER_BINS=("${RUNNER_RELEASE_BINS[@]}" runner-dev-"$CHAIN")
 fi
 
+# ---- build variants ---------------------------------------------------------
+# DVT picks the variant of a build, on any chain:
+#   0 or unset  default: the reviewed core, signing modes threshold and
+#               single. Its runners refuse a setup with
+#               signing_mode = dv_share at start.
+#   1           dvt: the runners are also built with the tag dvt
+#               (signing_mode = dv_share, tee-signer/server/dvshare.go) and
+#               link the DVT core (libsigner_core_dvt.a, built with -DSC_DVT
+#               by scripts/build-core.sh).
+# A dvt build's runners, build folders, image names and fingerprint files
+# carry "-dvt" after the chain's suffix (image_suffix): runner-aws-dvt,
+# runner-gcp-hoodi-dvt, build/nitro-dvt. A dvt build has no debug runners.
+DVT="${DVT:-0}"
+case "$DVT" in
+  0 | 1) ;;
+  *) echo "DVT must be 0 or 1 (got '$DVT')" >&2; exit 1 ;;
+esac
+export DVT
+if [ "$DVT" = 1 ]; then
+  RUNNER_RELEASE_BINS=("${RUNNER_RELEASE_BINS[@]/%/-dvt}")
+  if chain_is_prod "$CHAIN"; then
+    RUNNER_BINS=("${RUNNER_RELEASE_BINS[@]}" runner-dev-dvt)
+  else
+    RUNNER_BINS=("${RUNNER_RELEASE_BINS[@]}" runner-dev-"$CHAIN"-dvt)
+  fi
+fi
+
+# variant: the build variant, default or dvt.
+variant() { if [ "$DVT" = 1 ]; then echo dvt; else echo default; fi; }
+
+# check_core_variant LIB VARIANT NM: fails unless the core archive LIB is
+# of VARIANT (default or dvt), as NM (nm or a cross nm) lists its defined
+# symbols. Only the DVT core defines sc_signer_add_validator_group and
+# sc_core_dvt_marker (signer-core/src/signer.c, SC_DVT); scripts/build-core.sh
+# runs this on each archive it makes.
+check_core_variant() {
+  local lib="$1" want="$2" nm="$3" syms s
+  case "$want" in
+    default | dvt) ;;
+    *) echo "check_core_variant: variant must be default or dvt (got '$want')" >&2; return 1 ;;
+  esac
+  syms="$("$nm" --defined-only "$lib" | awk '{ print $3 }')" || { echo "$lib: $nm failed" >&2; return 1; }
+  grep -qx sc_signer_add_validator <<<"$syms" || { echo "$lib: no sc_signer_add_validator, not a signer core" >&2; return 1; }
+  for s in sc_signer_add_validator_group sc_core_dvt_marker; do
+    if grep -qx "$s" <<<"$syms"; then
+      [ "$want" = dvt ] || { echo "$lib: defines $s, so it is a DVT core, not the default core" >&2; return 1; }
+    else
+      [ "$want" = default ] || { echo "$lib: has no $s, so it is not a DVT core" >&2; return 1; }
+    fi
+  done
+}
+
 # image_suffix: the suffix of an image's runner, folder, names and record:
-# "-<chain>" for a non-prod chain, nothing for mainnet.
-image_suffix() { if chain_is_prod "$CHAIN"; then echo ""; else echo "-$CHAIN"; fi; }
+# "-<chain>" for a non-prod chain, nothing for mainnet, then "-dvt" for the
+# dvt variant.
+image_suffix() {
+  local s=""
+  chain_is_prod "$CHAIN" || s="-$CHAIN"
+  [ "$DVT" != 1 ] || s="$s-dvt"
+  echo "$s"
+}
 
 # runner_tags <binary name>: its platform tags, then debugimport for a debug
 # build, then nts for a cloud build, then the chain tags of a non-prod
-# build. No runner links an attestation verifier (scripts/check-deps.sh).
+# build, then dvt for a name that ends in -dvt. No runner links an
+# attestation verifier (scripts/check-deps.sh).
 # The cloud runners (azure, aws, gcp and their debug builds) link the Rust
 # NTS library (trusted-time, build/nts/<arch>/lib) and their images run the
 # NTS clock (-nts-clock). The dev builds stay without it.
-runner_tags() { runner_base_tags "$1"; }
+runner_tags() {
+  local t
+  case "$1" in
+    *-dvt) t="$(runner_base_tags "${1%-dvt}")" || return 1; echo "$t,dvt" ;;
+    *) runner_base_tags "$1" ;;
+  esac
+}
 runner_base_tags() {
   local c
   for c in $CHAINS; do
@@ -308,7 +373,7 @@ run_build_runner() {
   bash "$ROOT/scripts/build-nts.sh" --no-test "$@" || return 1
   docker run --rm --pull=never --network none --user "$(id -u):$(id -g)" \
     -e HOME=/tmp -e GOMODCACHE=/gomod -e GOPROXY=off -e GOFLAGS=-mod=readonly \
-    -e CHAIN -e CHAIN_JSON -e NTS_PREBUILT=1 \
+    -e CHAIN -e CHAIN_JSON -e DVT -e NTS_PREBUILT=1 \
     -v "$modcache:/gomod:ro" -v "$ROOT:$ROOT" -w "$ROOT" \
     "$SIGNER_BUILDER_IMAGE" bash scripts/build-runner.sh "$@"
 }

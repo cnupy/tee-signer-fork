@@ -3025,6 +3025,8 @@ static void test_typed(void)
     CHECK(strcmp(sc_status_name(SC_ERR_SELECTION_PROOF), "SC_ERR_SELECTION_PROOF") == 0);
 }
 
+/* ---- DVT build only (SC_DVT): sc_signer_add_validator_group ------------- */
+#ifdef SC_DVT
 /*
  * A distributed validator share: the core holds key 10000+i as a whole key
  * (its pubkey is the validator pubkey of the requests), and the selection
@@ -3140,6 +3142,7 @@ static void test_dv_share(void)
     g_loading = 0;
     CHECK_RC(sc_sign_selection_proof(bad, share_pk, slot, sig, NULL), SC_ERR_UNKNOWN_VALIDATOR);
 }
+#endif /* SC_DVT */
 
 /* ---- fork schedule updates ---------------------------------------------- */
 
@@ -4544,7 +4547,13 @@ int main(int argc, char **argv)
     test_builder_auth_go(data_dir);
     test_gloas_restart();
     test_typed();
+    /* The build variant, for scripts/test.sh; test_dv_share in DVT builds only. */
+#ifdef SC_DVT
     test_dv_share();
+    printf("variant dvt\n");
+#else
+    printf("variant default\n");
+#endif
     test_set_schedule();
     test_fork_change_marks();
     test_slot_times();

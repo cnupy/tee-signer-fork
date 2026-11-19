@@ -24,7 +24,9 @@ import (
 // finding asks for, so each fails until its fix lands.
 
 // sealedImportPayload is an IMPORT_SHARE_SEALED payload for sk filed under
-// the validator key pk, sealed to e's import key.
+// the validator key pk, sealed to e's import key. Under signing_mode =
+// dv_share (newVariantEnv in the dvt build) sk is a share of a split of a
+// fresh group key, filed under its own key pk (dvImportRequest).
 func (e *tgtEnv) sealedImportPayload(pk backend.Pubkey, sk [32]byte, index uint64, interchange *backend.Watermark) []byte {
 	e.t.Helper()
 	sp, err := core.PubkeyOf(sk)
@@ -33,6 +35,9 @@ func (e *tgtEnv) sealedImportPayload(pk backend.Pubkey, sk [32]byte, index uint6
 	}
 	req := backend.SealedImportRequest{Pubkey: pk, SharePubkey: sp, Index: index, Interchange: interchange,
 		Order: e.importOrder([]byte{1, 2}, pk, nil), T: 1, N: 1, ShareIndex: 1, Commitments: []backend.Pubkey{pk}}
+	if e.setup.SigningMode == setupwire.SigningModeDVShare {
+		req = e.dvImportRequest(pk, sk, index, interchange)
+	}
 	if req.Sealed, err = sealedimport.Seal(e.sealTo(), &req, &sk); err != nil {
 		e.t.Fatal(err)
 	}
@@ -118,7 +123,7 @@ func newKey(t *testing.T) ([32]byte, backend.Pubkey) {
 // mark: the honest key stopped signing and a restart read the log as
 // handed over.
 func TestReview4F1SealedImportRaisesMarkBeyondClock(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 
 	// An honest key, imported without interchange, signs at the clock.
 	hsk, hpk := newKey(t)
@@ -167,7 +172,7 @@ func TestReview4F1SealedImportRaisesMarkBeyondClock(t *testing.T) {
 // FORBIDDEN for IMPORT_SHARE_SEALED before the payload is read, and the
 // payload is wiped.
 func TestReview4F1SealedImportNeedsAdminRole(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	ask, apk := newKey(t)
 	p := e.sealedImportPayload(apk, ask, 7, nil)
 	_, err := e.srv.dispatchFor(context.Background(), wire.Frame{Type: wireadmin.TypeImportSealed, Payload: p}, &client{role: attls.RoleSigning})
@@ -196,7 +201,7 @@ func TestReview4F1SealedImportNeedsAdminRole(t *testing.T) {
 // epochs above the clock gives a silent outage of that length. Maxima above
 // the clock horizon must be refused.
 func TestReview4F1SealedImportMaximaBoundedByClock(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	now := e.signer.EpochAt(e.now())
 	ahead := now + 500
 	wm := backend.Watermark{HasAttestation: true, SourceEpoch: ahead, TargetEpoch: ahead, HasBlock: true, BlockSlot: ahead * 8}
@@ -212,7 +217,7 @@ func TestReview4F1SealedImportMaximaBoundedByClock(t *testing.T) {
 // Issue #4 F1, junk keys: the setup names max_keys. Sealed import must not
 // load more keys than that.
 func TestReview4F1SealedImportCapMaxKeys(t *testing.T) {
-	e2 := newTgtEnv(t, "dev", func(s *setupwire.Setup) { s.MaxKeys = 2 })
+	e2 := newVariantEnv(t, "dev", func(s *setupwire.Setup) { s.MaxKeys = 2 })
 	var errs []error
 	for i := range 3 {
 		sk, pk := newKey(t)
@@ -266,7 +271,7 @@ func TestReview5R1SealedImportMinorityThreshold(t *testing.T) {
 // lost-log path (tee-signer/start.go: "a new setup and a share re-import")
 // reaches exactly this state. The vote must be refused.
 func TestReview5R2FreshLogSourceBoundZero(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	if m, _ := e.marks.Mark(); m.HasAttestation {
 		t.Fatalf("not a fresh log: %+v", m)
 	}
@@ -288,7 +293,7 @@ func TestReview5R2FreshLogSourceBoundZero(t *testing.T) {
 // for the index the key was imported with, at any epoch, and for no
 // other index.
 func TestExitWithSetup(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	sk, pk := newKey(t)
 	if err := e.importSealed(pk, sk, 77, nil); err != nil {
 		t.Fatal(err)

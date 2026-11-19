@@ -30,7 +30,7 @@ func wantSlashSource(t *testing.T, err error, what string) {
 // HasAttestation with source 0, and a restart took that as vote history
 // and dropped the gate. The gate must survive the restart.
 func TestRBRLOG02SourceFloorSurvivesCoverAndRestart(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	floor := e.floorOf()
 	sk, pk := newKey(t)
 	if err := e.importSealed(pk, sk, 5, nil); err != nil { // no history
@@ -59,6 +59,7 @@ func TestRBRLOG02SourceFloorSurvivesCoverAndRestart(t *testing.T) {
 	if m, _ := e.marks.Mark(); m.SourceEpoch < floor {
 		t.Fatalf("log source %d after a vote at the floor %d", m.SourceEpoch, floor)
 	}
+	e.wantGroupKey(pk) // a dv_share key in the dvt build
 }
 
 // SSI-HISTORY-01: one import with vote history lifted the source gate for
@@ -67,7 +68,7 @@ func TestRBRLOG02SourceFloorSurvivesCoverAndRestart(t *testing.T) {
 // the restart floor of every key at its load, sources included. Both sign
 // at the floor, and after a restart at the new one.
 func TestSSIHISTORY01HistoryLiftsTheGateForItsKeyOnly(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	start := e.signer.EpochAt(e.now())
 	floor := e.floorOf()
 	ska, pka := newKey(t)
@@ -105,7 +106,7 @@ func TestSSIHISTORY01HistoryLiftsTheGateForItsKeyOnly(t *testing.T) {
 // process nor a restart signs it a vote that surrounds those votes, also
 // after the log's gate has dropped.
 func TestSLBOUND01LateImportGetsItsOwnSourceFloor(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	gate := e.floorOf()
 	ska, pka := newKey(t)
 	if err := e.importSealed(pka, ska, 5, nil); err != nil {

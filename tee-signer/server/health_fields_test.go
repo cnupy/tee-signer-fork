@@ -15,7 +15,7 @@ import (
 // A mark log whose store is no longer locked at a refresh stops writing,
 // and HEALTH says so: ready false and mark_log_lost names the lock.
 func TestHealthSaysTheMarkLogStoppedOnALostLock(t *testing.T) {
-	a := newTgtEnv(t, "dev", nil)
+	a := newVariantEnv(t, "dev", nil)
 	a.lockDays = 1
 	a.restart()
 	h, err := a.srv.health()
@@ -41,7 +41,7 @@ func TestHealthSaysTheMarkLogStoppedOnALostLock(t *testing.T) {
 // until a check passes, and HEALTH says so: ready false and mark_log_lost
 // names the unchecked lock. Once a check passes, HEALTH is ready again.
 func TestHealthSaysTheMarkLogLockIsUnchecked(t *testing.T) {
-	a := newTgtEnv(t, "dev", nil)
+	a := newVariantEnv(t, "dev", nil)
 	a.lockDays = 1
 	a.restart()
 	a.lockErr = errors.New("management plane blocked")
@@ -71,7 +71,7 @@ func TestHealthSaysTheMarkLogLockIsUnchecked(t *testing.T) {
 // RBRLOG-03) side by side: a runner with a setup whose key rule is not
 // locked, after a clone took its mark log over.
 func TestHealthCarriesKeyLockWhyAndMarkLogLost(t *testing.T) {
-	a := newTgtEnv(t, "dev", nil)
+	a := newVariantEnv(t, "dev", nil)
 	why := "release_policy.immutable is false: the key's owner can change the release policy"
 	a.srv.KeyLock, a.srv.KeyLockWhy = backend.KeyLockNotLocked, why
 	sk, pk := newKey(t)

@@ -25,11 +25,12 @@ import (
 // under an import order of k approvers in force that names the validator,
 // this cluster, chain and setup, and has not expired.
 func TestImportOrderRequired(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	send := func(order []byte) error {
 		t.Helper()
 		sk, pk := newKey(t)
-		if order == nil {
+		valid := order == nil
+		if valid {
 			order = e.importOrder([]byte{1, 2}, pk, nil)
 		} else if len(order) == 1 {
 			order = nil // no order at all
@@ -38,6 +39,18 @@ func TestImportOrderRequired(t *testing.T) {
 		req := backend.SealedImportRequest{Pubkey: pk, SharePubkey: sp, Index: 5, Order: order}
 		if order != nil {
 			req.T, req.N, req.ShareIndex, req.Commitments = 1, 1, 1, []backend.Pubkey{pk}
+		}
+		if e.setup.SigningMode == setupwire.SigningModeDVShare {
+			// sk is a share of a split of a fresh group key, under the
+			// order for that key or the case's order.
+			dv := e.dvImportRequest(sp, sk, 5, nil)
+			if !valid {
+				dv.Order = order
+			}
+			if order == nil {
+				dv.T, dv.N, dv.ShareIndex, dv.Commitments = 0, 0, 0, nil
+			}
+			req = dv
 		}
 		var err error
 		if req.Sealed, err = sealedimport.Seal(e.sealTo(), &req, &sk); err != nil {
@@ -83,8 +96,14 @@ func TestImportOrderRequired(t *testing.T) {
 // Issue #5 R5 and R1: the request carries the split (t, n, share index,
 // commitments) the order names; the share must be the commitments' value
 // at the index, commitment 0 the validator key, and 2t > n.
+// The dvt build runs the same checks on a dv_share runner, which takes
+// the share of a split under the order for its validator (group) key too.
 func TestImportSplit(t *testing.T) {
-	e := newTgtEnv(t, "dev", func(s *setupwire.Setup) { s.SigningMode = setupwire.SigningModeThreshold })
+	e := newVariantEnv(t, "dev", func(s *setupwire.Setup) {
+		if !dvtBuild() {
+			s.SigningMode = setupwire.SigningModeThreshold
+		}
+	})
 	sk, pk := newKey(t)
 	shares, commitments, err := software.SplitWithCommitments(sk, 2, 3)
 	if err != nil {

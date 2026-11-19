@@ -46,7 +46,7 @@ func wantSlashing(t *testing.T, err error, what string) {
 // epoch; a key loaded at start keeps the start floor; a restart floors
 // both.
 func TestLateImportGetsABlockFloor(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	pka, pkb, f0, late := lateImport(t, e)
 	x := (f0+5)*8 + 3 // above the start floor, below B's import floor
 	wantSlashing(t, e.signMsg(pkb, &backend.BeaconBlockHeader{Slot: x, ProposerIndex: 6, BodyRoot: backend.Root{0xb0, 1}}),
@@ -77,7 +77,7 @@ func TestLateImportGetsABlockFloor(t *testing.T) {
 // the block bound. An envelope needs the block this key signed at its
 // slot, which the block bound refuses below the floor.
 func TestLateImportGetsAPTCFloor(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	if e.signer.Config().GloasForkEpoch == nil {
 		t.Skip("the dev setup schedules no Gloas fork")
 	}
@@ -111,7 +111,7 @@ func TestLateImportGetsAPTCFloor(t *testing.T) {
 // block bound too: it may have proposed elsewhere after its interchange
 // was exported.
 func TestLateImportWithHistoryGetsABlockFloor(t *testing.T) {
-	e := newTgtEnv(t, "dev", nil)
+	e := newVariantEnv(t, "dev", nil)
 	f0 := e.floorOf()
 	ska, pka := newKey(t)
 	if err := e.importSealed(pka, ska, 5, nil); err != nil {
@@ -143,7 +143,7 @@ func TestLateImportWithHistoryGetsABlockFloor(t *testing.T) {
 // device mark, so only the first late import starts below the floor.
 func TestLateImportBlockFloorHasNoWindow(t *testing.T) {
 	for round := range 25 {
-		e := newTgtEnv(t, "dev", nil)
+		e := newVariantEnv(t, "dev", nil)
 		f0 := e.floorOf()
 		ska, pka := newKey(t)
 		if err := e.importSealed(pka, ska, 5, nil); err != nil {

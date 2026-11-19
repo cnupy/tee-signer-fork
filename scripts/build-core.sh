@@ -6,6 +6,14 @@
 #   build/<arch>/lib/libsigner_core.a
 #   build/<arch>/lib/libblst.a
 #
+# DVT=1 (common.sh) builds the DVT core instead: compiled with -DSC_DVT
+# (sc_signer_add_validator_group and the group key rules, signer_core.h)
+# into build/<arch>/lib/libsigner_core_dvt.a. Runners built with the tag dvt
+# link that library (signer-core/core/dvt.go), the default runners
+# libsigner_core.a, so neither stands in for the other. Each archive must
+# match its variant (common.sh check_core_variant): only the DVT core
+# defines sc_signer_add_validator_group and sc_core_dvt_marker.
+#
 # signer-core is the signer-core folder of this repo (common.sh).
 #
 # Usage: build-core.sh [x86_64|aarch64 ...]   default: the host arch, plus
@@ -52,6 +60,11 @@ else
 fi
 
 WARN="-Wall -Wextra -Werror -Wshadow -Wstrict-prototypes -Wmissing-prototypes"
+if [ "$DVT" = 1 ]; then
+  core_lib=libsigner_core_dvt.a obj_dir=obj-dvt dvt_def=(-DSC_DVT)
+else
+  core_lib=libsigner_core.a obj_dir=obj dvt_def=()
+fi
 for arch in "${archs[@]}"; do
   cc="$(cc_for "$arch")"
   command -v "$cc" >/dev/null || { echo "missing compiler $cc for $arch" >&2; exit 1; }
@@ -63,9 +76,9 @@ for arch in "${archs[@]}"; do
   # archive and object, so no stale libblst.a or .o gets linked.
   stamp="$("$cc" --version | head -n 1; "$ar" --version | head -n 1; sha256sum <"$THIRD_PARTY/blst.sha256")"
   if [ "$(cat "$out/core.stamp" 2>/dev/null)" != "$stamp" ]; then
-    rm -rf "$out/lib/libblst.a" "$out/lib/libsigner_core.a" "$out/obj" "$out/blst"
+    rm -rf "$out/lib/libblst.a" "$out/lib/libsigner_core.a" "$out/lib/libsigner_core_dvt.a" "$out/obj" "$out/obj-dvt" "$out/blst"
   fi
-  mkdir -p "$out/lib" "$out/obj" "$out/blst"
+  mkdir -p "$out/lib" "$out/$obj_dir" "$out/blst"
   printf '%s\n' "$stamp" >"$out/core.stamp"
 
   if [ ! -f "$out/lib/libblst.a" ] || [ "${BASH_SOURCE[0]}" -nt "$out/lib/libblst.a" ]; then
@@ -85,21 +98,25 @@ for arch in "${archs[@]}"; do
 
   # Every run compiles all core files (a handful), so no old object can
   # end up in the library.
-  rm -f "$out/obj/"*.o
+  rm -f "$out/$obj_dir/"*.o
   objs=()
   for c in "$SRC"/src/*.c; do
-    o="$out/obj/$(basename "${c%.c}").o"
+    o="$out/$obj_dir/$(basename "${c%.c}").o"
     # -ffreestanding drops the distro default stack protector; turn it on.
     # shellcheck disable=SC2086
     "$cc" -std=c11 -O2 -fPIC -ffreestanding -fstack-protector-strong -fno-common $WARN \
-      -I"$SRC/include" -I"$BLST_DIR/bindings" -c "$c" -o "$o"
+      ${dvt_def[@]+"${dvt_def[@]}"} -I"$SRC/include" -I"$BLST_DIR/bindings" -c "$c" -o "$o"
     objs+=("$o")
   done
-  rm -f "$out/lib/libsigner_core.a"
-  "$ar" rcs "$out/lib/libsigner_core.a" "${objs[@]}"
+  rm -f "$out/lib/$core_lib"
+  "$ar" rcs "$out/lib/$core_lib" "${objs[@]}"
   # The stack protector flag must reach the objects (signer-core/scripts/test.sh
   # checks the same for the make build).
-  "$nm" -u "$out/lib/libsigner_core.a" | grep -w __stack_chk_fail >/dev/null ||
-    { echo "libsigner_core.a for $arch has no stack protector (__stack_chk_fail)" >&2; exit 1; }
-  log "libsigner_core.a built for $arch"
+  "$nm" -u "$out/lib/$core_lib" | grep -w __stack_chk_fail >/dev/null ||
+    { echo "$core_lib for $arch has no stack protector (__stack_chk_fail)" >&2; exit 1; }
+  # The archive is of this run's variant: the DVT symbols in the DVT core
+  # only. The release lane builds its cores with this script too.
+  check_core_variant "$out/lib/$core_lib" "$(variant)" "$nm" ||
+    { rm -f "$out/lib/$core_lib"; exit 1; }
+  log "$core_lib built for $arch"
 done
