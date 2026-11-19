@@ -68,7 +68,7 @@
 //	    type no runner serves tells a role-checking image from an older
 //	    one, an empty CONFIG_UPDATE tells the admin role from the others.
 //	    Changes nothing. Run it before every order or import.
-//	signer-admin import-draft -cluster cluster.json -signer NAME -split FILE [-not-after 12h] [-allow-gcp-unsafe-single-key] [-out import.bin]
+//	signer-admin import-draft -cluster cluster.json -signer NAME -split FILE [-lock cluster-lock.json [-beacon URL] [-yes]] [-not-after 12h] [-allow-gcp-unsafe-single-key] [-out import.bin]
 //	    Draft an import order for one target signer: its setup_sha256, t, n,
 //	    its share index and, per validator, the hash of the t commitments.
 //	    The split file gives each signer its own share index, 1 to n
@@ -118,6 +118,12 @@
 //	    OUT/shares/NAME/shares.txt (mode 0600) for import -shares and
 //	    OUT/manifest.json (split.go). OUT must be a new folder on tmpfs;
 //	    swap must be off (or -allow-swap), core dumps are turned off.
+//	signer-admin dv-split -lock cluster-lock.json -signers NAME=INDEX[,NAME=INDEX...] [-out split.json]
+//	    For dv_share signers: read a Charon cluster lock, interpolate each
+//	    validator's commitments from its public shares, check every public
+//	    share and the group key against them, and write the split file of
+//	    import-draft and import (dvsplit.go). import then takes a shares
+//	    file that names each share by its own key, as for single mode.
 //	signer-admin issue-client-cert -ca-cert FILE -ca-key FILE -role admin|attest|signing -name CN -out DIR
 //	signer-admin issue-client-cert -ca-cert FILE -ca-key FILE -make-intermediate ROLE -name CN -out DIR
 //	    Issue one client certificate of a role, or a role intermediate from
@@ -197,11 +203,12 @@ const usage = `usage:
   signer-admin assemble [-active FILE] [-out update.signed] update.bin SIG...
   signer-admin push -cluster cluster.json [-raise-min] [-signers NAME,...] [-drop-running-image NAME,...] update.signed
   signer-admin probe -cluster cluster.json [-signers NAME,...]
-  signer-admin import-draft -cluster cluster.json -signer NAME -split FILE [-not-after 12h] [-allow-gcp-unsafe-single-key] [-out import.bin]
+  signer-admin import-draft -cluster cluster.json -signer NAME -split FILE [-lock cluster-lock.json [-beacon URL] [-yes]] [-not-after 12h] [-allow-gcp-unsafe-single-key] [-out import.bin]
   signer-admin import -cluster cluster.json -signer NAME -order import.signed -shares FILE -commitments FILE
   signer-admin exit -cluster cluster.json [-signers NAME,...] [-split FILE] -pubkey 0x... -index N -epoch E -out exit.json|-partial-out FILE
   signer-admin exit-combine -split FILE [-pubkey 0x...] [-index N] [-epoch E] -out exit.json PARTIALS...
   signer-admin split -keystores DIR -password-file FILE -t T -n N -signers NAME,... [-chain mainnet|hoodi|devnet|ci-test] [-expect FILE] [-allow-swap] -out DIR
+  signer-admin dv-split -lock cluster-lock.json -signers NAME=INDEX[,NAME=INDEX...] [-out split.json]
   signer-admin issue-client-cert -ca-cert FILE -ca-key FILE -role admin|attest|signing|-make-intermediate ROLE -name CN -out DIR`
 
 func run(args []string, out io.Writer) error {
@@ -212,6 +219,7 @@ func run(args []string, out io.Writer) error {
 		"setup": cmdSetup, "pin": cmdPin, "status": cmdStatus, "draft": cmdDraft,
 		"show": cmdShow, "sign": cmdSign, "assemble": cmdAssemble, "push": cmdPush,
 		"probe": cmdProbe, "import-draft": cmdImportDraft, "import": cmdImport, "exit": cmdExit, "exit-combine": cmdExitCombine, "split": cmdSplit,
+		"dv-split":          cmdDVSplit,
 		"issue-client-cert": cmdIssueClientCert, "approver-key": cmdApproverKey,
 	}
 	cmd, ok := cmds[args[0]]

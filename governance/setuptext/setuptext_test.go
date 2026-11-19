@@ -37,6 +37,30 @@ func dropSalts(text string) string {
 	return strings.Join(out, "\n")
 }
 
+// signing_mode = dv_share reads, writes back the same and keeps the setup
+// hash across the round trip.
+func TestSigningModeDVShareRoundTrip(t *testing.T) {
+	text := string(must(FormatSetup(setups(t)["setup-gcp"])))
+	text = replaceLine(t, text, "signing_mode", "signing_mode = dv_share")
+	s, err := ParseSetup("dv.conf", []byte(text))
+	if err != nil || s.SigningMode != setupwire.SigningModeDVShare {
+		t.Fatalf("parse: %v, %v", s, err)
+	}
+	back := must(FormatSetup(s))
+	if !strings.Contains(string(back), "\nsigning_mode = dv_share\n") {
+		t.Fatal("dv_share not written back")
+	}
+	again, err := ParseSetup("dv.conf", back)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h1, _ := s.Hash()
+	h2, _ := again.Hash()
+	if h1 != h2 {
+		t.Fatal("the round trip moved setup_hash")
+	}
+}
+
 func TestParseSetupRefusals(t *testing.T) {
 	ss := setups(t)
 	nitro := string(must(FormatSetup(ss["setup-nitro"])))
@@ -82,8 +106,8 @@ func TestParseSetupRefusals(t *testing.T) {
 		{"project number 0", replaceLine(t, gcp, "sealing_key_release.project_number", "sealing_key_release.project_number = 0"), "want 1 or more, or leave the key out"},
 		{"project number twice", gcp + "sealing_key_release.project_number = 5\n", "sealing_key_release.project_number: set again"},
 		{"signing_mode missing", replaceLine(t, nitro, "signing_mode", ""), "signing_mode is missing"},
-		{"signing_mode unknown", replaceLine(t, nitro, "signing_mode", "signing_mode = solo"), `signing_mode: "solo": want threshold or single`},
-		{"signing_mode as a number", replaceLine(t, nitro, "signing_mode", "signing_mode = 2"), `signing_mode: "2": want threshold or single`},
+		{"signing_mode unknown", replaceLine(t, nitro, "signing_mode", "signing_mode = solo"), `signing_mode: "solo": want threshold, single or dv_share`},
+		{"signing_mode as a number", replaceLine(t, nitro, "signing_mode", "signing_mode = 2"), `signing_mode: "2": want threshold, single or dv_share`},
 		{"old format key", nitro + "format = 2\n", `unknown key "format"`},
 		{"old safety key", nitro + "max_epochs_ahead = 2\n", `unknown key "max_epochs_ahead"`},
 		{"old locked key", nitro + "k = 2\n", `unknown key "k"`},
@@ -319,6 +343,22 @@ func TestAmounts(t *testing.T) {
 	for _, in := range []string{"18446744073.709551616 ETH", ". ETH", "1. ETH", ".5 ETH", "1 Wei", "1e9 Gwei", "", "ETH"} {
 		if _, err := parseAmount(in); err == nil {
 			t.Errorf("%q accepted", in)
+		}
+	}
+}
+
+// The note above signing_mode, which the approvers read before they sign
+// a setup, explains each of the three modes.
+func TestSigningModeNoteNamesEveryMode(t *testing.T) {
+	text := string(must(FormatSetup(setups(t)["setup-gcp"])))
+	_, note, ok := strings.Cut(text, "# signing_mode: ")
+	if !ok {
+		t.Fatal("no note above signing_mode")
+	}
+	note, _, _ = strings.Cut(note, "\nsigning_mode = ")
+	for _, m := range []string{"threshold:", "single:", "dv_share:"} {
+		if !strings.Contains(note, m) {
+			t.Errorf("the signing_mode note does not explain %s\n%s", m, note)
 		}
 	}
 }

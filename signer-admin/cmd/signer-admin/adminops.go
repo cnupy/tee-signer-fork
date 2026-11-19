@@ -243,11 +243,14 @@ func cmdImportDraft(args []string, out io.Writer) error {
 	notAfter := fs.String("not-after", "12h", "the runner takes no share under the order from then on: RFC 3339 time, or a duration from now; at most 7 days")
 	outPath := fs.String("out", "import.bin", "the order body to sign; the target's setup and locked values in force go to the same name with .active")
 	allowGCPSingle := fs.Bool("allow-gcp-unsafe-single-key", false, "confirm a 1 of 1 order to a GCP signer whose setup accepts it; UNSAFE: "+setupwire.UnsafeSingleKeyWarning)
+	lockPath := fs.String("lock", "", "for a dv_share signer (required): the Charon cluster-lock.json the split file came from")
+	beacon := fs.String("beacon", "", "for a dv_share signer: a beacon node API URL; refuse a share key that is a validator, warn on a group key that is not an active one")
+	yes := fs.Bool("yes", false, "for a dv_share signer: confirm without a question that the keys are shares from a Charon cluster when no chain check backs them")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 || *target == "" || *splitPath == "" {
-		return errors.New("usage: signer-admin import-draft -cluster cluster.json -signer NAME -split FILE [-not-after 12h] [-allow-gcp-unsafe-single-key] [-out import.bin]")
+		return errors.New("usage: signer-admin import-draft -cluster cluster.json -signer NAME -split FILE [-lock cluster-lock.json [-beacon URL] [-yes]] [-not-after 12h] [-allow-gcp-unsafe-single-key] [-out import.bin]")
 	}
 	split, err := readSplit(*splitPath)
 	if err != nil {
@@ -271,6 +274,32 @@ func cmdImportDraft(args []string, out io.Writer) error {
 	// sees the warning; show prints the same line to each approver.
 	if err := setupwire.CheckThresholdOn(m.setup, int(split.T), int(split.N)); err != nil {
 		return fmt.Errorf("%s (signing_mode %s): %w", m.name, m.setup.SigningMode, err)
+	}
+	if m.setup.SigningMode != setupwire.SigningModeDVShare {
+		if *lockPath != "" || *beacon != "" || *yes {
+			return fmt.Errorf("%s: -lock, -beacon and -yes are for a dv_share signer, its setup says signing_mode = %s", m.name, m.setup.SigningMode)
+		}
+	} else {
+		if *lockPath == "" {
+			return fmt.Errorf("%s: a dv_share signer: -lock is required, the Charon cluster lock the split file came from", m.name)
+		}
+		shares, err := checkLockSplit(split, *lockPath, idx)
+		if err != nil {
+			return err
+		}
+		fprintf(out, "%s: %d validators of the split are in the lock, share %d of each is the lock's public share\n", *lockPath, len(shares), idx)
+		onChain := false
+		if *beacon == "" {
+			fprintf(out, "beacon check skipped (no -beacon): share keys not looked up as validators, group keys not checked for active\n")
+		} else if onChain, err = checkBeacon(context.Background(), *beacon, m.setup.Chain.GenesisValidatorsRoot, shares, out); err != nil {
+			return err
+		}
+		// Without the chain behind them the admin vouches for the keys.
+		if !onChain && !*yes {
+			if err := confirmShares(len(shares)); err != nil {
+				return err
+			}
+		}
 	}
 	if m.setup.Platform.Platform == setupwire.PlatformGCP && split.T == 1 && split.N == 1 {
 		if !*allowGCPSingle {
@@ -407,6 +436,10 @@ type share struct {
 	secret [32]byte
 	// sharePub, if set, is what the secret's public key must be.
 	sharePub cloud.Pubkey
+	// markKey, if set, is the key a dv_share runner lists the share under
+	// and the slashing protection file names it by: the share's own key,
+	// for a share filed under its group key (fileDVShares).
+	markKey cloud.Pubkey
 }
 
 // readShares reads the shares file: one share per line, either
@@ -582,6 +615,8 @@ func cmdImport(args []string, out io.Writer) error {
 		// must report for it.
 		gvr       cloud.Root
 		gvrOfHash [32]byte
+		// mode is the target's signing_mode, 0 if no setup says it.
+		mode setupwire.SigningMode
 	)
 	if byCluster {
 		*cf.only = *target
@@ -592,6 +627,7 @@ func cmdImport(args []string, out io.Writer) error {
 		m := c.members[0]
 		name, setup, clID = m.name, &m.setupHash, m.setup.ClusterID
 		gvr, gvrOfHash = cloud.Root(m.setup.Chain.GenesisValidatorsRoot), m.setupHash
+		mode = m.setup.SigningMode
 		dial = func() (*runnerclient.Client, error) { return connectAdmin(m, *cf.timeout) }
 	} else {
 		conn, err := loadConn(*connPath)
@@ -636,7 +672,7 @@ func cmdImport(args []string, out io.Writer) error {
 					fprintf(out, "%s: the image pin is on the approved list of locked version %d\n", *connPath, v)
 				}
 			}
-			setup, clID = &gvrOfHash, s.ClusterID
+			setup, clID, mode = &gvrOfHash, s.ClusterID, s.SigningMode
 		case conn.Attestation.Verifier != runnerclient.VerifierDev:
 			return fmt.Errorf("%s: verifier %s: -conn needs -setup, the runner's setup file, to check the image that cloud.json pins against the approvers' list (refusing)",
 				*connPath, conn.Attestation.Verifier)
@@ -688,6 +724,13 @@ func cmdImport(args []string, out io.Writer) error {
 		}
 	}()
 	if o != nil {
+		n, err := fileDVShares(shares, split, o.Body.ShareIndex, mode == setupwire.SigningModeDVShare)
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			fprintf(out, "%d shares named by their own key are shares %d of split validators: filed under the validator key, sent with their own key as share_pubkey (dv_share)\n", n, o.Body.ShareIndex)
+		}
 		if err := checkShareIndex(*sharesPath, shares, split, o); err != nil {
 			return err
 		}
@@ -753,7 +796,8 @@ func cmdImport(args []string, out io.Writer) error {
 	}
 	for i := range shares {
 		s := &shares[i] // not a copy of the secret
-		if held[s.pubkey] {
+		// A dv_share runner lists the share under its own key.
+		if held[s.pubkey] || s.markKey != (cloud.Pubkey{}) && held[s.markKey] {
 			skipped++
 			continue
 		}
@@ -775,7 +819,11 @@ func cmdImport(args []string, out io.Writer) error {
 		}
 		req := cloud.ImportShareRequest{Pubkey: s.pubkey, Secret: s.secret, Index: s.index}
 		if ic != nil {
-			if req.Interchange, err = ic.markOf(s.pubkey); err != nil {
+			mk := s.pubkey
+			if s.markKey != (cloud.Pubkey{}) {
+				mk = s.markKey
+			}
+			if req.Interchange, err = ic.markOf(mk); err != nil {
 				failed = true
 				fprintf(out, "%s %s: %v, not sent\n", name, s.pubkey, err)
 				continue

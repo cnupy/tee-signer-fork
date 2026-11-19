@@ -34,11 +34,17 @@ type fakeSigner struct {
 	calls  []string
 	domain phase0.Domain
 	err    error
+	// dvShare: key is served from a signer of signing_mode = dv_share.
+	dvShare bool
 }
 
 func (f *fakeSigner) PublicKeys(context.Context) []phase0.BLSPubKey { return []phase0.BLSPubKey{f.key} }
 
 func (f *fakeSigner) HasKey(_ context.Context, k phase0.BLSPubKey) bool { return k == f.key }
+
+func (f *fakeSigner) DVShare(_ context.Context, k phase0.BLSPubKey) bool {
+	return f.dvShare && k == f.key
+}
 
 func (f *fakeSigner) sig() phase0.BLSSignature {
 	var s phase0.BLSSignature
@@ -323,5 +329,37 @@ func TestVerifierRejectsBadSignature(t *testing.T) {
 	}
 	if gotRoot == (phase0.Root{}) {
 		t.Fatal("verifier did not get the signing root")
+	}
+}
+
+// A Charon validator client registers the group key of a dv_share key,
+// which only the signer knows: for such a key the gateway leaves the
+// registration's key to the signer, and still applies the fee recipient
+// allowlist. A key of another mode still needs its own key.
+func TestDVShareRegistrationNamesGroupKey(t *testing.T) {
+	other := "0x2222222222222222222222222222222222222222"
+	groupKey := "0x" + strings.Repeat("a1", 48)
+	for _, c := range []struct {
+		name    string
+		dvShare bool
+		body    string
+		code    int
+	}{
+		{"dv_share, group key", true, registrationBody(allowedFeeRecipient, groupKey), 200},
+		{"dv_share, own key", true, registrationBody(allowedFeeRecipient, pubHex), 200},
+		{"dv_share, group key, fee recipient not allowlisted", true, registrationBody(other, groupKey), 412},
+		{"not dv_share, another key", false, registrationBody(allowedFeeRecipient, groupKey), 412},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			srv, f := newTestServer(t)
+			f.dvShare = c.dvShare
+			code, _, body := post(t, srv, pubHex, "application/json", c.body)
+			if code != c.code {
+				t.Fatalf("got %d %s, want %d", code, body, c.code)
+			}
+			if called := len(f.calls) == 1; called != (c.code == 200) {
+				t.Fatalf("signer calls %v", f.calls)
+			}
+		})
 	}
 }

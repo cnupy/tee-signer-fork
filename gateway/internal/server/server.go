@@ -162,7 +162,8 @@ func (s *Server) sign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.policy.Check(pubkey, job); err != nil {
+	dvShare := job.Type == signing.TypeValidatorRegistration && s.signer.DVShare(r.Context(), pubkey)
+	if err := s.policy.Check(pubkey, dvShare, job); err != nil {
 		s.m.Requests.Inc(job.Type, "policy")
 		log.Warn("refused by policy", "err", err.Error())
 		writeError(w, http.StatusPreconditionFailed, err.Error())

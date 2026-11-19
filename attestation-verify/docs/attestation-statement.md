@@ -65,7 +65,7 @@ Each leaf has its own 32-byte salt. A salt of 32 zero bytes is refused everywher
 | 13 | `slashing_mark_prewrite.target_epochs` | u64, 0 to 8 |
 | 14 | `max_keys` | u32, 1 to 8192 |
 | 15 | `slashing_log_min_lock_days` | u32, 1 to 36500 |
-| 16 | `signing_mode` | u8: 1 threshold (shares of t-of-n splits, n >= 2), 2 single (whole keys, 1 of 1 import orders only) |
+| 16 | `signing_mode` | u8: 1 threshold (shares of t-of-n splits, n >= 2), 2 single (whole keys, 1 of 1 import orders only), 3 dv_share (one share of each validator of a Charon cluster, served under the share's own key) |
 
 `locked`, 16 leaves:
 

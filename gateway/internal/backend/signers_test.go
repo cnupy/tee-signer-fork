@@ -452,7 +452,7 @@ func TestWholeKeyNeedsSingleMode(t *testing.T) {
 	for _, c := range []struct {
 		mode   string
 		served bool
-	}{{"single", true}, {"threshold", false}, {"", false}} {
+	}{{"single", true}, {"dv_share", true}, {"threshold", false}, {"", false}, {"dv-share", false}} {
 		single := cluster([]*testKey{w}, 1)[0]
 		single.mode = c.mode
 		fakes := append(cluster([]*testKey{k}, 3), single)
@@ -709,6 +709,34 @@ func TestWholeKeyModeAgesOut(t *testing.T) {
 	}
 }
 
+// A dv_share signer lists each Charon share as a whole key; its
+// signing_mode ages out as single's does, and a switch to threshold drops
+// the key.
+func TestDVShareWholeKeyModeAgesOut(t *testing.T) {
+	w := splitKey(t, 1, 1)
+	dv := cluster([]*testKey{w}, 1)[0]
+	dv.mode = "dv_share"
+	s := newTestSigners(t, []*fakeRunner{dv})
+	if _, ok := s.keys.lookup(w.pk); !ok {
+		t.Fatal("the key of a dv_share signer is not served")
+	}
+	dv.set(func(f *fakeRunner) { f.healthErr = errors.New("health down") })
+	skewClock(s, 3*keysMaxAge+time.Second)
+	if _, err := s.Refresh(context.Background()); err == nil {
+		t.Fatal("a load with no key to serve passed")
+	}
+	if _, ok := s.keys.lookup(w.pk); ok {
+		t.Fatal("the dv_share key is still served after its signing_mode aged out")
+	}
+	dv.set(func(f *fakeRunner) { f.healthErr, f.mode = nil, "threshold" })
+	if _, err := s.Refresh(context.Background()); err == nil {
+		t.Fatal("a load with no key to serve passed")
+	}
+	if _, ok := s.keys.lookup(w.pk); ok {
+		t.Fatal("the whole key is served from a signer that reports threshold")
+	}
+}
+
 // When every key is whole, a load that fails still drops a whole key whose
 // signing_mode aged out: the old list is not kept as it was.
 func TestWholeKeyModeAgesOutWhenTheLoadFails(t *testing.T) {
@@ -800,4 +828,28 @@ func (b *syncBuilder) String() string {
 	defer b.mu.Unlock()
 
 	return b.b.String()
+}
+
+// DVShare reports a whole key of a dv_share signer only: the gateway lets
+// such a key's registration name another key (the group key).
+func TestDVShareReported(t *testing.T) {
+	k, w, dvk := splitKey(t, 2, 3), splitKey(t, 1, 1), splitKey(t, 1, 1)
+	fakes := cluster([]*testKey{k}, 3)
+	single := cluster([]*testKey{w}, 1)[0]
+	dv := cluster([]*testKey{dvk}, 1)[0]
+	dv.mode = "dv_share"
+	s := newTestSigners(t, append(fakes, single, dv))
+	ctx := context.Background()
+	for _, c := range []struct {
+		name string
+		pk   phase0.BLSPubKey
+		want bool
+	}{{"threshold key", k.pk, false}, {"single key", w.pk, false}, {"dv_share key", dvk.pk, true}, {"unknown key", phase0.BLSPubKey{1}, false}} {
+		if !s.HasKey(ctx, c.pk) && c.want {
+			t.Fatalf("%s is not served", c.name)
+		}
+		if got := s.DVShare(ctx, c.pk); got != c.want {
+			t.Errorf("%s: DVShare %v, want %v", c.name, got, c.want)
+		}
+	}
 }

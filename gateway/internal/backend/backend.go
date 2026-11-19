@@ -27,6 +27,11 @@ type Signer interface {
 	PublicKeys(ctx context.Context) []phase0.BLSPubKey
 	// HasKey reports whether pubkey can be signed for.
 	HasKey(ctx context.Context, pubkey phase0.BLSPubKey) bool
+	// DVShare reports whether pubkey is served from a signer that reports
+	// signing_mode = dv_share: a share of a distributed validator, whose
+	// builder registration may name the share key or the group key. Only
+	// that signer knows the group key, so it checks the registration's key.
+	DVShare(ctx context.Context, pubkey phase0.BLSPubKey) bool
 	// Sign returns the validator signature over job.SigningRoot.
 	Sign(ctx context.Context, pubkey phase0.BLSPubKey, job *signing.Job) (phase0.BLSSignature, error)
 }

@@ -36,6 +36,8 @@ func (f *countingSigner) PublicKeys(context.Context) []phase0.BLSPubKey { return
 
 func (f *countingSigner) HasKey(_ context.Context, k phase0.BLSPubKey) bool { return f.keys[k] }
 
+func (f *countingSigner) DVShare(context.Context, phase0.BLSPubKey) bool { return false }
+
 func (f *countingSigner) do() (phase0.BLSSignature, error) {
 	f.mu.Lock()
 	f.calls++
