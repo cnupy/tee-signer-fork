@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lidofinance/tee-signer/governance/setupwire"
 	cloud "github.com/lidofinance/tee-signer/signer-protocol"
 )
 
@@ -99,8 +100,8 @@ const (
 // healthy node of genesis fork version 0x00000000 whose head is the
 // current slot.
 type fakeNode struct {
-	gvr  [32]byte
-	fork [4]byte
+	gvr  cloud.Root
+	fork cloud.Version
 	// syncing is the is_syncing value, "false" when empty; "bad" is an
 	// answer that does not parse.
 	syncing string
@@ -130,7 +131,7 @@ func fakeBeaconNode(t *testing.T, n fakeNode) *httptest.Server {
 	clock := now // read here, not in the handler, which runs on another goroutine
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/eth/v1/beacon/genesis" {
-			fmt.Fprintf(w, `{"data":{"genesis_time":"%d","genesis_validators_root":"0x%x","genesis_fork_version":"0x%x"}}`, fakeGenesisTime, n.gvr, n.fork)
+			fmt.Fprintf(w, `{"data":{"genesis_time":"%d","genesis_validators_root":"0x%x","genesis_fork_version":"0x%x"}}`, fakeGenesisTime, n.gvr[:], n.fork[:])
 			return
 		}
 		if r.Method == http.MethodGet && r.URL.Path == "/eth/v1/node/syncing" {
@@ -176,8 +177,22 @@ func fakeBeaconNode(t *testing.T, n fakeNode) *httptest.Server {
 	return srv
 }
 
-// testGVR is the chain of the fake beacon node in the tests.
-var testGVR = [32]byte{0x4b, 0x36, 0x3d}
+// testChain is the chain of the fake beacon node in the tests that call
+// checkBeacon: Hoodi, a non-prod chain, where a slashed or exited group
+// key gets a warning only.
+var testChain = func() *setupwire.Chain {
+	var ch setupwire.Chain
+	hex.Decode(ch.GenesisValidatorsRoot[:], []byte(strings.TrimPrefix(hoodiRoot, "0x")))
+	hex.Decode(ch.GenesisForkVersion[:], []byte(strings.TrimPrefix(hoodiFork, "0x")))
+	return &ch
+}()
+
+// fakeBeaconOf is fakeBeacon for chain ch: its genesis_validators_root and
+// genesis fork version.
+func fakeBeaconOf(t *testing.T, ch *setupwire.Chain, known map[cloud.Pubkey]string, ids *[]string) *httptest.Server {
+	t.Helper()
+	return fakeBeaconNode(t, fakeNode{gvr: ch.GenesisValidatorsRoot, fork: ch.GenesisForkVersion, known: known, ids: ids})
+}
 
 // -beacon refuses a share key that is a validator, warns on a group key
 // that is unknown, not active or slashed, and sends public keys only, at
@@ -198,9 +213,9 @@ func TestCheckBeacon(t *testing.T) {
 	ctx := context.Background()
 
 	var ids []string
-	srv := fakeBeacon(t, testGVR, known, &ids)
+	srv := fakeBeaconOf(t, testChain, known, &ids)
 	var out bytes.Buffer
-	if confirmed, err := checkBeacon(ctx, srv.URL, testGVR, shares, &out); err != nil || !confirmed {
+	if confirmed, err := checkBeacon(ctx, srv.URL, testChain, shares, &out); err != nil || !confirmed {
 		t.Fatalf("confirmed %v, %v", confirmed, err)
 	}
 	wantIn(t, out.String(), "WARNING validator "+c.groups[1].String()+": status pending_queued",
@@ -226,15 +241,15 @@ func TestCheckBeacon(t *testing.T) {
 		t.Errorf("asked for %d keys, want 40", asked)
 	}
 
-	srv = fakeBeacon(t, testGVR, map[cloud.Pubkey]string{c.groups[0]: "active_ongoing", c.sharePub(t, 2, 1): "active_ongoing"}, &ids)
-	_, err := checkBeacon(ctx, srv.URL, testGVR, shares, &out)
+	srv = fakeBeaconOf(t, testChain, map[cloud.Pubkey]string{c.groups[0]: "active_ongoing", c.sharePub(t, 2, 1): "active_ongoing"}, &ids)
+	_, err := checkBeacon(ctx, srv.URL, testChain, shares, &out)
 	if err == nil || !strings.Contains(err.Error(), "share "+c.sharePub(t, 2, 1).String()) || !strings.Contains(err.Error(), "is itself a validator") {
 		t.Fatalf("share key that is a validator: %v", err)
 	}
 
 	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }))
 	defer down.Close()
-	if _, err := checkBeacon(ctx, down.URL, testGVR, shares, &out); err == nil || !strings.Contains(err.Error(), "503") {
+	if _, err := checkBeacon(ctx, down.URL, testChain, shares, &out); err == nil || !strings.Contains(err.Error(), "503") {
 		t.Fatalf("beacon node down: %v", err)
 	}
 }
@@ -255,34 +270,34 @@ func TestCheckBeaconWrongNode(t *testing.T) {
 	other := [32]byte{0xd8, 0xea}
 	srv := fakeBeacon(t, other, map[cloud.Pubkey]string{}, &ids)
 	var out bytes.Buffer
-	_, err := checkBeacon(ctx, srv.URL, testGVR, shares, &out)
+	_, err := checkBeacon(ctx, srv.URL, testChain, shares, &out)
 	if err == nil || !strings.Contains(err.Error(), "0x"+hex.EncodeToString(other[:])) || !strings.Contains(err.Error(), "another chain") || len(ids) != 0 {
 		t.Fatalf("node of another chain: %v, %d lookups", err, len(ids))
 	}
 
 	for _, syncing := range []string{"true", "bad"} {
 		ids = nil
-		srv = fakeBeaconSync(t, testGVR, syncing, map[cloud.Pubkey]string{}, &ids)
-		_, err = checkBeacon(ctx, srv.URL, testGVR, shares, &out)
+		srv = fakeBeaconNode(t, fakeNode{gvr: testChain.GenesisValidatorsRoot, fork: testChain.GenesisForkVersion, syncing: syncing, ids: &ids})
+		_, err = checkBeacon(ctx, srv.URL, testChain, shares, &out)
 		if err == nil || !strings.Contains(err.Error(), "the beacon node is not synced: ") || !strings.Contains(err.Error(), "; drop -beacon to skip") || len(ids) != 0 {
 			t.Fatalf("is_syncing %s: %v, %d lookups", syncing, err, len(ids))
 		}
 	}
 
-	srv = fakeBeacon(t, testGVR, map[cloud.Pubkey]string{}, &ids)
+	srv = fakeBeaconOf(t, testChain, map[cloud.Pubkey]string{}, &ids)
 	out.Reset()
-	if confirmed, err := checkBeacon(ctx, srv.URL, testGVR, shares, &out); err != nil || confirmed {
+	if confirmed, err := checkBeacon(ctx, srv.URL, testChain, shares, &out); err != nil || confirmed {
 		t.Fatalf("synced node that knows no group key: confirmed %v, %v", confirmed, err)
 	}
 	wantIn(t, out.String(), "WARNING no group key is deposited yet (new cluster?)")
 
-	srv = fakeBeacon(t, testGVR, map[cloud.Pubkey]string{c.sharePub(t, 1, 1): "active_ongoing"}, &ids)
-	_, err = checkBeacon(ctx, srv.URL, testGVR, shares, &out)
+	srv = fakeBeaconOf(t, testChain, map[cloud.Pubkey]string{c.sharePub(t, 1, 1): "active_ongoing"}, &ids)
+	_, err = checkBeacon(ctx, srv.URL, testChain, shares, &out)
 	if err == nil || !strings.Contains(err.Error(), "is itself a validator") {
 		t.Fatalf("share key that is a validator, no group key known: %v", err)
 	}
 
-	if _, err := checkBeacon(ctx, srv.URL, [32]byte{}, shares, &out); err == nil || !strings.Contains(err.Error(), "no genesis_validators_root") {
+	if _, err := checkBeacon(ctx, srv.URL, &setupwire.Chain{GenesisForkVersion: testChain.GenesisForkVersion}, shares, &out); err == nil || !strings.Contains(err.Error(), "no genesis_validators_root") {
 		t.Fatalf("setup without a root: %v", err)
 	}
 }
@@ -339,9 +354,9 @@ func TestCheckBeaconPartlyKnown(t *testing.T) {
 		}
 	}
 	var ids []string
-	srv := fakeBeacon(t, testGVR, known, &ids)
+	srv := fakeBeaconOf(t, testChain, known, &ids)
 	var out bytes.Buffer
-	if confirmed, err := checkBeacon(context.Background(), srv.URL, testGVR, shares, &out); err != nil || confirmed {
+	if confirmed, err := checkBeacon(context.Background(), srv.URL, testChain, shares, &out); err != nil || confirmed {
 		t.Fatalf("one group key unknown: confirmed %v, %v", confirmed, err)
 	}
 }

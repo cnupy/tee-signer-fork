@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lidofinance/tee-signer/governance/setupwire"
 	"github.com/lidofinance/tee-signer/signer-core/threshold"
 	cloud "github.com/lidofinance/tee-signer/signer-protocol"
 )
@@ -186,10 +187,34 @@ func beaconValidators(ctx context.Context, base string, keys []cloud.Pubkey) (ma
 			return nil, fmt.Errorf("beacon node: %w", err)
 		}
 		for _, d := range r.Data {
+			if !beaconStatuses[d.Status] {
+				return nil, fmt.Errorf("beacon node: validator %s has status %q, not a validator status of the beacon API", d.Validator.Pubkey, d.Status)
+			}
 			got[d.Validator.Pubkey] = d.Status
 		}
 	}
 	return got, nil
+}
+
+// beaconStatuses are the validator statuses of the beacon API
+// (/eth/v1/beacon/states/{state_id}/validators). The chain check refuses
+// any other text, from a node or in a chain file.
+var beaconStatuses = map[string]bool{
+	"pending_initialized": true, "pending_queued": true,
+	"active_ongoing": true, "active_exiting": true, "active_slashed": true,
+	"exited_unslashed": true, "exited_slashed": true,
+	"withdrawal_possible": true, "withdrawal_done": true,
+}
+
+// statusGone reports whether a validator of status st is slashed or has
+// exited: no cluster would import its key. active_exiting is not gone:
+// it still attests until its exit epoch.
+func statusGone(st string) bool {
+	switch st {
+	case "active_slashed", "exited_unslashed", "exited_slashed", "withdrawal_possible", "withdrawal_done":
+		return true
+	}
+	return false
 }
 
 // nodeSync is a beacon node's answer to GET /eth/v1/node/syncing. A field
@@ -312,22 +337,33 @@ func orderKeys(shares map[cloud.Pubkey]cloud.Pubkey) []cloud.Pubkey {
 	return keys
 }
 
+// beaconHint ends a -beacon error that a node, not the keys, caused. On a
+// prod chain the check cannot be skipped, so it does not say to drop
+// -beacon.
+func beaconHint(prod bool) string {
+	if prod {
+		return "the chain check is required on this chain: use a synced node of the chain, or -chain-file FILE (signer-admin chain-export)"
+	}
+	return "drop -beacon to skip the check"
+}
+
 // beaconView looks up keys on the beacon node at base. The node must serve
-// the setup's chain (gvr, its genesis_validators_root) and be current
-// (beaconHead).
-func beaconView(ctx context.Context, base string, gvr [32]byte, keys []cloud.Pubkey) (*chainView, error) {
-	if gvr == ([32]byte{}) {
-		return nil, errors.New("-beacon: the setup's chain has no genesis_validators_root to compare the beacon node with; drop -beacon to skip the check")
+// the setup's chain ch (both genesis values) and be current (beaconHead).
+func beaconView(ctx context.Context, base string, ch *setupwire.Chain, keys []cloud.Pubkey) (*chainView, error) {
+	hint := beaconHint(ch.Prod())
+	if ch.GenesisValidatorsRoot == (cloud.Root{}) {
+		return nil, fmt.Errorf("-beacon: the setup's chain has no genesis_validators_root to compare the beacon node with; %s", hint)
 	}
 	g, err := beaconGenesis(ctx, base)
 	if err != nil {
 		return nil, fmt.Errorf("-beacon: %w", err)
 	}
-	if g.Root != gvr {
-		return nil, fmt.Errorf("-beacon: the beacon node serves another chain: genesis_validators_root %s, the setup's chain has %s (refusing)", g.Root, cloud.Root(gvr))
+	if g.Root != ch.GenesisValidatorsRoot || g.Fork != ch.GenesisForkVersion {
+		return nil, fmt.Errorf("-beacon: the beacon node serves another chain: genesis_validators_root %s, genesis_fork_version 0x%x; the setup's chain has %s, 0x%x (refusing)",
+			g.Root, g.Fork, ch.GenesisValidatorsRoot, ch.GenesisForkVersion)
 	}
 	if _, err := beaconHead(ctx, base, g, now()); err != nil {
-		return nil, fmt.Errorf("-beacon: %v; drop -beacon to skip the check", err)
+		return nil, fmt.Errorf("-beacon: %v; %s", err, hint)
 	}
 	known, err := beaconValidators(ctx, base, keys)
 	if err != nil {
@@ -337,11 +373,12 @@ func beaconView(ctx context.Context, base string, gvr [32]byte, keys []cloud.Pub
 }
 
 // check refuses a share key the chain knows as a validator: a whole
-// validator key would go in as a share. A group key that is not an active
-// validator gets a warning only, and so does a chain that knows none of
-// them (a new cluster may not be deposited yet). It returns how many group
-// keys the chain knows.
-func (v *chainView) check(shares map[cloud.Pubkey]cloud.Pubkey, out io.Writer) (int, error) {
+// validator key would go in as a share. On a prod chain it also refuses a
+// group key that is slashed or exited (statusGone). Elsewhere such a key,
+// and any group key that is not an active validator, gets a warning only,
+// and so does a chain that knows none of them (a new cluster may not be
+// deposited yet). It returns how many group keys the chain knows.
+func (v *chainView) check(shares map[cloud.Pubkey]cloud.Pubkey, prod bool, out io.Writer) (int, error) {
 	var bad []string
 	for g, s := range shares {
 		if st, ok := v.status[s]; ok {
@@ -351,6 +388,17 @@ func (v *chainView) check(shares map[cloud.Pubkey]cloud.Pubkey, out io.Writer) (
 	if len(bad) > 0 {
 		slices.Sort(bad)
 		return 0, fmt.Errorf("%s: %s: a whole validator key would go in as a share (refusing)", v.flag, strings.Join(bad, "; "))
+	}
+	if prod {
+		for g := range shares {
+			if st := v.status[g]; statusGone(st) {
+				bad = append(bad, fmt.Sprintf("validator %s is %s %s", g, st, v.where))
+			}
+		}
+		if len(bad) > 0 {
+			slices.Sort(bad)
+			return 0, fmt.Errorf("%s: %s: on a prod chain a group key that is slashed or exited is not imported (refusing)", v.flag, strings.Join(bad, "; "))
+		}
 	}
 	found := 0
 	for g := range shares {
@@ -382,15 +430,15 @@ func (v *chainView) check(shares map[cloud.Pubkey]cloud.Pubkey, out io.Writer) (
 	return found, nil
 }
 
-// checkBeacon is check on the beacon node at base (beaconView). It reports
-// whether the node knows every group key, so the chain backs the keys:
-// one known key says nothing about the others.
-func checkBeacon(ctx context.Context, base string, gvr [32]byte, shares map[cloud.Pubkey]cloud.Pubkey, out io.Writer) (bool, error) {
-	v, err := beaconView(ctx, base, gvr, orderKeys(shares))
+// checkBeacon is check on the beacon node at base for chain ch
+// (beaconView). It reports whether the node knows every group key, so the
+// chain backs the keys: one known key says nothing about the others.
+func checkBeacon(ctx context.Context, base string, ch *setupwire.Chain, shares map[cloud.Pubkey]cloud.Pubkey, out io.Writer) (bool, error) {
+	v, err := beaconView(ctx, base, ch, orderKeys(shares))
 	if err != nil {
 		return false, err
 	}
-	found, err := v.check(shares, out)
+	found, err := v.check(shares, ch.Prod(), out)
 	return err == nil && found == len(shares), err
 }
 

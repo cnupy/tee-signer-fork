@@ -85,9 +85,9 @@
 //	    (chaincheck.go) looks up each group key and share key: -beacon
 //	    asks a beacon node, -chain-file reads the file of chain-export. A
 //	    share key that is a validator is refused. On a prod chain the check
-//	    is required and every group key must be a validator; on a
-//	    non-prod chain it is optional and the admin confirms the keys
-//	    without it (or -yes).
+//	    is required and every group key must be a validator, not slashed
+//	    or exited; on a non-prod chain it is optional and the admin
+//	    confirms the keys without it (or -yes).
 //	signer-admin import -cluster cluster.json -signer NAME -order import.signed -shares FILE -commitments FILE
 //	    Probe the role, check the runner's attestation, seal each share of
 //	    FILE (mode 0600) to the attested import key and send them under

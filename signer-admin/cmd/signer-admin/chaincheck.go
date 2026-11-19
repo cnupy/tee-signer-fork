@@ -142,7 +142,8 @@ func cmdChainExport(args []string, out io.Writer) error {
 //
 // On a prod chain (setupwire.ProdChain: mainnet, or genesis values no row
 // of the chain table matches) the check is required and every group key
-// must be a validator on chain; -yes does not replace it. On a non-prod
+// must be a validator on chain, not slashed or exited; -yes does not
+// replace it. On a non-prod
 // chain it is optional: without it, or when a group key is not on chain,
 // the admin confirms once (or with -yes) that the keys are Charon shares.
 func checkDVChain(name string, ch *setupwire.Chain, shares map[cloud.Pubkey]cloud.Pubkey, beacon, chainFile string, yes bool, out io.Writer) error {
@@ -157,7 +158,7 @@ func checkDVChain(name string, ch *setupwire.Chain, shares map[cloud.Pubkey]clou
 	var err error
 	switch {
 	case beacon != "":
-		view, err = beaconView(context.Background(), beacon, ch.GenesisValidatorsRoot, orderKeys(shares))
+		view, err = beaconView(context.Background(), beacon, ch, orderKeys(shares))
 	case chainFile != "":
 		view, err = readChainFile(chainFile, ch, orderKeys(shares), now())
 	case prod:
@@ -170,7 +171,7 @@ func checkDVChain(name string, ch *setupwire.Chain, shares map[cloud.Pubkey]clou
 	}
 	found := 0
 	if view != nil {
-		if found, err = view.check(shares, out); err != nil {
+		if found, err = view.check(shares, prod, out); err != nil {
 			return err
 		}
 	}
@@ -225,13 +226,13 @@ func readChainFile(path string, ch *setupwire.Chain, keys []cloud.Pubkey, at tim
 		return nil, fmt.Errorf("-chain-file %s: the chain state is from %s (head slot %d), %s old, more than %s: export it again from a synced node",
 			path, rfc(f.HeadTime), f.HeadSlot, at.Sub(f.HeadTime).Truncate(time.Minute), chainFileMaxAge)
 	case f.HeadTime.After(f.Time.Add(chainClockSkew)) || f.Time.Sub(f.HeadTime) > chainHeadMaxLag:
-		return nil, fmt.Errorf("-chain-file %s: head_time %s and export time %s: chain-export takes a head at most %s behind its clock and not ahead of it (refusing)",
-			path, rfc(f.HeadTime), rfc(f.Time), chainHeadMaxLag)
+		return nil, fmt.Errorf("-chain-file %s: head_time %s and export time %s: chain-export takes a head at most %s behind its clock and %s ahead (refusing)",
+			path, rfc(f.HeadTime), rfc(f.Time), chainHeadMaxLag, chainClockSkew)
 	}
 	listed := make(map[cloud.Pubkey]string, len(f.Validators))
 	for _, v := range f.Validators {
-		if v.Status == "" {
-			return nil, fmt.Errorf("-chain-file %s: key %s has no status", path, v.Pubkey)
+		if v.Status != chainNotFound && !beaconStatuses[v.Status] {
+			return nil, fmt.Errorf("-chain-file %s: key %s has status %q, not a validator status of the beacon API or %s", path, v.Pubkey, v.Status, chainNotFound)
 		}
 		if _, dup := listed[v.Pubkey]; dup {
 			return nil, fmt.Errorf("-chain-file %s: key %s is listed twice", path, v.Pubkey)

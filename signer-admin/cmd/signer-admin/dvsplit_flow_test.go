@@ -89,7 +89,7 @@ func startDVRun(t *testing.T) *dvRun {
 	other := newCharonCluster(t, 2, 3, 4).lock(t, filepath.Join(dir, "other-lock.json"), nil)
 	wantIn(t, failTool(t, "import-draft", "-cluster", cl, "-signer", "d1", "-split", splitPath, "-lock", other, "-out", body), "is not in")
 	var ids []string
-	beacon := fakeBeacon(t, setup.Chain.GenesisValidatorsRoot, map[cloud.Pubkey]string{c.groups[0]: "active_ongoing", c.sharePub(t, 0, 1): "active_ongoing"}, &ids)
+	beacon := fakeBeaconOf(t, &setup.Chain, map[cloud.Pubkey]string{c.groups[0]: "active_ongoing", c.sharePub(t, 0, 1): "active_ongoing"}, &ids)
 	wantIn(t, failTool(t, "import-draft", "-cluster", cl, "-signer", "d1", "-split", splitPath, "-lock", lock, "-beacon", beacon.URL, "-out", body),
 		"is itself a validator")
 	// No chain check: one question, which only y or yes passes.
@@ -107,7 +107,7 @@ func startDVRun(t *testing.T) *dvRun {
 	fakePrompt(t, true, "y\n")
 	mustTool(t, draft...)
 	// A beacon node that knows the group keys: no question.
-	known := fakeBeacon(t, setup.Chain.GenesisValidatorsRoot, map[cloud.Pubkey]string{c.groups[0]: "active_ongoing", c.groups[1]: "active_ongoing"}, &ids)
+	known := fakeBeaconOf(t, &setup.Chain, map[cloud.Pubkey]string{c.groups[0]: "active_ongoing", c.groups[1]: "active_ongoing"}, &ids)
 	asked = fakePrompt(t, true, "")
 	mustTool(t, append(draft, "-beacon", known.URL)...)
 	if asked.Len() != 0 {

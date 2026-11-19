@@ -355,3 +355,107 @@ func TestChainFileHeadTime(t *testing.T) {
 		wantIn(t, failTool(t, append(draft, "-chain-file", p)...), x.want)
 	}
 }
+
+func mustHexFork(t *testing.T, s string) (v [4]byte) {
+	t.Helper()
+	b, err := hex.DecodeString(strings.TrimPrefix(s, "0x"))
+	if err != nil || len(b) != 4 {
+		t.Fatalf("fork version %q", s)
+	}
+	copy(v[:], b)
+	return v
+}
+
+// On a prod chain the chain check refuses a group key that is slashed or
+// exited (a cluster key no one would import), from a beacon node and from
+// a chain file; active_exiting passes, and a pending key with a warning. On
+// every chain it refuses a status the beacon API does not define.
+func TestDVShareProdChainStatuses(t *testing.T) {
+	f := newDVFakeMainnet(t)
+	root := mustHexRoot(t, mainnetRoot)
+	c := f.c
+	body := f.fc.path("import.bin")
+	draft := []string{"import-draft", "-cluster", f.fc.cluster, "-signer", "s2", "-split", f.split, "-lock", f.lock, "-out", body}
+	fakePrompt(t, true, "")
+	var ids []string
+	withGroup1 := func(st string) map[cloud.Pubkey]string {
+		m := map[cloud.Pubkey]string{}
+		for _, g := range c.groups {
+			m[g] = "active_ongoing"
+		}
+		m[c.groups[1]] = st
+		return m
+	}
+	chain := f.fc.path("chain.json")
+	t.Run("slashed or exited", func(t *testing.T) {
+		for _, st := range []string{"active_slashed", "exited_unslashed", "exited_slashed", "withdrawal_possible", "withdrawal_done"} {
+			wantIn(t, failTool(t, append(draft, "-beacon", fakeBeacon(t, root, withGroup1(st), &ids).URL)...),
+				"slashed or exited", c.groups[1].String(), st)
+			mustTool(t, "chain-export", "-beacon", fakeBeacon(t, root, withGroup1(st), &ids).URL, "-lock", f.lock, "-out", chain)
+			wantIn(t, failTool(t, append(draft, "-chain-file", chain)...), "slashed or exited", c.groups[1].String(), st)
+		}
+		wantIn(t, mustTool(t, append(draft, "-beacon", fakeBeacon(t, root, withGroup1("active_exiting"), &ids).URL)...), "import order for s2")
+		for _, st := range []string{"pending_initialized", "pending_queued"} {
+			wantIn(t, mustTool(t, append(draft, "-beacon", fakeBeacon(t, root, withGroup1(st), &ids).URL)...),
+				"WARNING validator "+c.groups[1].String()+": status "+st, "import order for s2")
+		}
+	})
+
+	t.Run("status the beacon API does not define", func(t *testing.T) {
+		wantIn(t, failTool(t, append(draft, "-beacon", fakeBeacon(t, root, withGroup1("active"), &ids).URL)...), `status "active"`, "beacon API")
+		mustTool(t, "chain-export", "-beacon", fakeBeacon(t, root, withGroup1("active_ongoing"), &ids).URL, "-lock", f.lock, "-out", chain)
+		shareKey := c.sharePub(t, 0, 1).String()
+		for _, x := range []struct{ key, status string }{{c.groups[1].String(), "active"}, {shareKey, "unknown"}, {shareKey, "Active_ongoing"}} {
+			p := editChainFile(t, chain, "status-"+x.status, func(m map[string]any) {
+				for _, v := range m["validators"].([]any) {
+					if e := v.(map[string]any); e["pubkey"] == x.key {
+						e["status"] = x.status
+					}
+				}
+			})
+			wantIn(t, failTool(t, append(draft, "-chain-file", p)...), `status "`+x.status+`"`, "beacon API")
+		}
+	})
+}
+
+// -beacon compares both genesis values with the setup's chain, as the
+// chain file does. On a prod chain its errors say that the check is
+// required; elsewhere they say that dropping -beacon skips it.
+func TestDVShareBeaconForkAndHints(t *testing.T) {
+	f := newDVFakeMainnet(t)
+	root := mustHexRoot(t, mainnetRoot)
+	allGroups := map[cloud.Pubkey]string{}
+	for _, g := range f.c.groups {
+		allGroups[g] = "active_ongoing"
+	}
+	body := f.fc.path("import.bin")
+	draft := []string{"import-draft", "-cluster", f.fc.cluster, "-signer", "s2", "-split", f.split, "-lock", f.lock, "-out", body}
+	fakePrompt(t, true, "")
+	var ids []string
+	t.Run("fork version", func(t *testing.T) {
+		ids = nil
+		otherFork := fakeBeaconNode(t, fakeNode{gvr: root, fork: mustHexFork(t, hoodiFork), known: allGroups, ids: &ids})
+		wantIn(t, failTool(t, append(draft, "-beacon", otherFork.URL)...), "another chain", "genesis_fork_version 0x10000910")
+		if len(ids) != 0 {
+			t.Fatalf("%d key lookups on a node of another fork version", len(ids))
+		}
+	})
+
+	t.Run("prod chain errors", func(t *testing.T) {
+		for _, x := range stalledNodes(root, allGroups, &ids) {
+			out := failTool(t, append(draft, "-beacon", fakeBeaconNode(t, x.node).URL)...)
+			wantIn(t, out, x.want, "the chain check is required on this chain")
+			if strings.Contains(out, "drop -beacon") {
+				t.Fatalf("%s: a prod chain error says to drop -beacon:\n%s", x.name, out)
+			}
+		}
+	})
+
+	t.Run("non-prod chain errors", func(t *testing.T) {
+		h := newDVFakeBare(t, "hoodi")
+		hoodi := fakeNode{gvr: mustHexRoot(t, hoodiRoot), fork: mustHexFork(t, hoodiFork), headLag: time.Hour, ids: &ids}
+		hdraft := []string{"import-draft", "-cluster", h.fc.cluster, "-signer", "s2", "-split", h.split, "-lock", h.lock, "-out", h.fc.path("import.bin")}
+		out := failTool(t, append(hdraft, "-beacon", fakeBeaconNode(t, hoodi).URL)...)
+		wantIn(t, out, "behind this machine's clock", "drop -beacon to skip")
+	})
+}
