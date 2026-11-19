@@ -244,13 +244,14 @@ func cmdImportDraft(args []string, out io.Writer) error {
 	outPath := fs.String("out", "import.bin", "the order body to sign; the target's setup and locked values in force go to the same name with .active")
 	allowGCPSingle := fs.Bool("allow-gcp-unsafe-single-key", false, "confirm a 1 of 1 order to a GCP signer whose setup accepts it; UNSAFE: "+setupwire.UnsafeSingleKeyWarning)
 	lockPath := fs.String("lock", "", "for a dv_share signer (required): the Charon cluster-lock.json the split file came from")
-	beacon := fs.String("beacon", "", "for a dv_share signer: a beacon node API URL; refuse a share key that is a validator, warn on a group key that is not an active one")
-	yes := fs.Bool("yes", false, "for a dv_share signer: confirm without a question that the keys are shares from a Charon cluster when no chain check backs them")
+	beacon := fs.String("beacon", "", "for a dv_share signer: a beacon node API URL for the chain check; refuse a share key that is a validator, warn on a group key that is not an active one (on a prod chain: refuse)")
+	chainFile := fs.String("chain-file", "", "for a dv_share signer: the chain check offline, from the file of signer-admin chain-export (at most 24h old)")
+	yes := fs.Bool("yes", false, "for a dv_share signer on a non-prod chain: confirm without a question that the keys are shares from a Charon cluster when no chain check backs them")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 || *target == "" || *splitPath == "" {
-		return errors.New("usage: signer-admin import-draft -cluster cluster.json -signer NAME -split FILE [-lock cluster-lock.json [-beacon URL] [-yes]] [-not-after 12h] [-allow-gcp-unsafe-single-key] [-out import.bin]")
+		return errors.New("usage: signer-admin import-draft -cluster cluster.json -signer NAME -split FILE [-lock cluster-lock.json [-beacon URL | -chain-file chain.json] [-yes]] [-not-after 12h] [-allow-gcp-unsafe-single-key] [-out import.bin]")
 	}
 	split, err := readSplit(*splitPath)
 	if err != nil {
@@ -276,8 +277,8 @@ func cmdImportDraft(args []string, out io.Writer) error {
 		return fmt.Errorf("%s (signing_mode %s): %w", m.name, m.setup.SigningMode, err)
 	}
 	if m.setup.SigningMode != setupwire.SigningModeDVShare {
-		if *lockPath != "" || *beacon != "" || *yes {
-			return fmt.Errorf("%s: -lock, -beacon and -yes are for a dv_share signer, its setup says signing_mode = %s", m.name, m.setup.SigningMode)
+		if *lockPath != "" || *beacon != "" || *chainFile != "" || *yes {
+			return fmt.Errorf("%s: -lock, -beacon, -chain-file and -yes are for a dv_share signer, its setup says signing_mode = %s", m.name, m.setup.SigningMode)
 		}
 	} else {
 		if *lockPath == "" {
@@ -288,17 +289,8 @@ func cmdImportDraft(args []string, out io.Writer) error {
 			return err
 		}
 		fprintf(out, "%s: %d validators of the split are in the lock, share %d of each is the lock's public share\n", *lockPath, len(shares), idx)
-		onChain := false
-		if *beacon == "" {
-			fprintf(out, "beacon check skipped (no -beacon): share keys not looked up as validators, group keys not checked for active\n")
-		} else if onChain, err = checkBeacon(context.Background(), *beacon, m.setup.Chain.GenesisValidatorsRoot, shares, out); err != nil {
+		if err := checkDVChain(m.name, &m.setup.Chain, shares, *beacon, *chainFile, *yes, out); err != nil {
 			return err
-		}
-		// Without the chain behind them the admin vouches for the keys.
-		if !onChain && !*yes {
-			if err := confirmShares(len(shares)); err != nil {
-				return err
-			}
 		}
 	}
 	if m.setup.Platform.Platform == setupwire.PlatformGCP && split.T == 1 && split.N == 1 {

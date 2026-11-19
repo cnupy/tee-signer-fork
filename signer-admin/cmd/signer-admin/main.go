@@ -68,7 +68,7 @@
 //	    type no runner serves tells a role-checking image from an older
 //	    one, an empty CONFIG_UPDATE tells the admin role from the others.
 //	    Changes nothing. Run it before every order or import.
-//	signer-admin import-draft -cluster cluster.json -signer NAME -split FILE [-lock cluster-lock.json [-beacon URL] [-yes]] [-not-after 12h] [-allow-gcp-unsafe-single-key] [-out import.bin]
+//	signer-admin import-draft -cluster cluster.json -signer NAME -split FILE [-lock cluster-lock.json [-beacon URL | -chain-file chain.json] [-yes]] [-not-after 12h] [-allow-gcp-unsafe-single-key] [-out import.bin]
 //	    Draft an import order for one target signer: its setup_sha256, t, n,
 //	    its share index and, per validator, the hash of the t commitments.
 //	    The split file gives each signer its own share index, 1 to n
@@ -81,6 +81,13 @@
 //	    WARNING line (setupwire.UnsafeSingleKeyWarning); show prints the
 //	    same line to each approver. show, sign and assemble take it as
 //	    they take an order.
+//	    For a dv_share signer -lock is required, and the chain check
+//	    (chaincheck.go) looks up each group key and share key: -beacon
+//	    asks a beacon node, -chain-file reads the file of chain-export. A
+//	    share key that is a validator is refused. On a prod chain the check
+//	    is required and every group key must be a validator; on a
+//	    non-prod chain it is optional and the admin confirms the keys
+//	    without it (or -yes).
 //	signer-admin import -cluster cluster.json -signer NAME -order import.signed -shares FILE -commitments FILE
 //	    Probe the role, check the runner's attestation, seal each share of
 //	    FILE (mode 0600) to the attested import key and send them under
@@ -128,6 +135,12 @@
 //	    share and the group key against them, and write the split file of
 //	    import-draft and import (dvsplit.go). import then takes a shares
 //	    file that names each share by its own key, as for single mode.
+//	signer-admin chain-export -beacon URL -lock cluster-lock.json [-out chain.json]
+//	    For the chain check of import-draft -chain-file on a machine
+//	    without network: ask a synced beacon node about every group key
+//	    and public share of the lock and write its answer, the chain's
+//	    genesis values, the head epoch and the time (chaincheck.go).
+//	    import-draft takes the file for at most 24 hours.
 //	signer-admin dv-indices, dv-exit, dv-exit-post
 //	    With the build tag dvt only: the exit route of dv_share signers
 //	    through the Obol API (dvexit.go, dvpost.go).
@@ -210,12 +223,13 @@ const usage = `usage:
   signer-admin assemble [-active FILE] [-out update.signed] update.bin SIG...
   signer-admin push -cluster cluster.json [-raise-min] [-signers NAME,...] [-drop-running-image NAME,...] update.signed
   signer-admin probe -cluster cluster.json [-signers NAME,...]
-  signer-admin import-draft -cluster cluster.json -signer NAME -split FILE [-lock cluster-lock.json [-beacon URL] [-yes]] [-not-after 12h] [-allow-gcp-unsafe-single-key] [-out import.bin]
+  signer-admin import-draft -cluster cluster.json -signer NAME -split FILE [-lock cluster-lock.json [-beacon URL | -chain-file chain.json] [-yes]] [-not-after 12h] [-allow-gcp-unsafe-single-key] [-out import.bin]
   signer-admin import -cluster cluster.json -signer NAME -order import.signed -shares FILE -commitments FILE
   signer-admin exit -cluster cluster.json [-signers NAME,...] [-split FILE] -pubkey 0x... -index N -epoch E -out exit.json|-partial-out FILE
   signer-admin exit-combine -split FILE [-pubkey 0x...] [-index N] [-epoch E] -out exit.json PARTIALS...
   signer-admin split -keystores DIR -password-file FILE -t T -n N -signers NAME,... [-chain mainnet|hoodi|devnet|ci-test] [-expect FILE] [-allow-swap] -out DIR
   signer-admin dv-split -lock cluster-lock.json -signers NAME=INDEX[,NAME=INDEX...] [-out split.json]
+  signer-admin chain-export -beacon URL -lock cluster-lock.json [-out chain.json]
   signer-admin issue-client-cert -ca-cert FILE -ca-key FILE -role admin|attest|signing|-make-intermediate ROLE -name CN -out DIR`
 
 // dvtCommands and dvtUsage are the commands of a build with the tag dvt
@@ -234,7 +248,7 @@ func run(args []string, out io.Writer) error {
 		"setup": cmdSetup, "pin": cmdPin, "status": cmdStatus, "draft": cmdDraft,
 		"show": cmdShow, "sign": cmdSign, "assemble": cmdAssemble, "push": cmdPush,
 		"probe": cmdProbe, "import-draft": cmdImportDraft, "import": cmdImport, "exit": cmdExit, "exit-combine": cmdExitCombine, "split": cmdSplit,
-		"dv-split":          cmdDVSplit,
+		"dv-split": cmdDVSplit, "chain-export": cmdChainExport,
 		"issue-client-cert": cmdIssueClientCert, "approver-key": cmdApproverKey,
 	}
 	for name, cmd := range dvtCommands {

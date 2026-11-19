@@ -633,7 +633,12 @@ group key no cluster uses, and a dv_share runner that takes it signs
 alone for that validator without the single-mode rules. So the approvers
 check each group key of a dv_share order before they sign it: a validator
 on chain, or a key from a cluster lock they trust (`signer-admin`
-README, "Charon shares"). The runner then stores and serves the
+README, "Charon shares"). On a prod chain `signer-admin import-draft`
+also refuses a dv_share order unless chain data, from a beacon node or
+a fresh `chain-export` file of the setup's chain, shows every group key
+as a validator and no share key as one. That check trusts the node or
+the file and runs on the admin's machine; the approvers' check stays.
+The runner then stores and serves the
 share under `share_pubkey`, the key Charon's validator client asks for:
 PUBLIC_KEYS lists it with `pubkey` = `share_pubkey`, so the gateway sees a
 whole key, and marks, floors and policy apply to that key. The group key

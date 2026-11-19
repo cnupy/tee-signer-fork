@@ -97,6 +97,10 @@ func fakeBeaconSync(t *testing.T, gvr [32]byte, syncing string, known map[cloud.
 			fmt.Fprintf(w, `{"data":{"head_slot":"100","sync_distance":"0","is_syncing":%s,"is_optimistic":false,"el_offline":false}}`, syncing)
 			return
 		}
+		if r.Method == http.MethodGet && r.URL.Path == "/eth/v1/config/spec" {
+			fmt.Fprint(w, `{"data":{"CONFIG_NAME":"mainnet","SECONDS_PER_SLOT":"12","SLOTS_PER_EPOCH":"32"}}`)
+			return
+		}
 		if r.Method != http.MethodGet || r.URL.Path != "/eth/v1/beacon/states/head/validators" {
 			http.NotFound(w, r)
 			return
