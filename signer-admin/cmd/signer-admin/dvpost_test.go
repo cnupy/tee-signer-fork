@@ -375,6 +375,10 @@ func TestDVExitPostRefusals(t *testing.T) {
 	garbage := writeFile(t, p.fc.path("garbage-key"), "not a key at all, a secret phrase")
 	os.Chmod(garbage, 0o600)
 	k1 := p.keys[1].Key.Bytes()
+	// Operator 1's key with one byte too many: hex.Decode into 32 bytes
+	// must not run past the end.
+	long := writeFile(t, p.fc.path("long-key"), hex.EncodeToString(k1[:])+"00")
+	os.Chmod(long, 0o600)
 
 	for _, c := range []struct {
 		name  string
@@ -387,6 +391,7 @@ func TestDVExitPostRefusals(t *testing.T) {
 		{"no operator", []string{"-enr-key", strangerFile}, nil, "the ENR key is no operator's in " + p.lock},
 		{"mode", []string{"-enr-key", p.keyFile(t, 2, 0o644)}, nil, "mode 0644: others may read it; chmod 600"},
 		{"not a key", []string{"-enr-key", garbage}, nil, "is not a hex secp256k1 private key"},
+		{"long key", []string{"-enr-key", long}, nil, long + " is not a hex secp256k1 private key"},
 		{"bad partial", nil, []string{edit("bad.json", func(m map[string]any) {
 			e1 := m["partial_exits"].([]any)[1].(map[string]any)["signed_exit_message"].(map[string]any)
 			exit0(m)["signed_exit_message"].(map[string]any)["signature"] = e1["signature"]

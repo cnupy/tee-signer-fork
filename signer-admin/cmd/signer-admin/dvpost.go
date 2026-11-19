@@ -422,13 +422,18 @@ func readENRKey(path string) (*secp256k1.PrivateKey, error) {
 	}
 	defer clear(raw)
 	text := bytes.TrimPrefix(bytes.TrimSpace(raw), []byte("0x"))
+	notKey := fmt.Errorf("%s is not a hex secp256k1 private key", path)
+	// The length first: hex.Decode does not check the size of b.
+	if len(text) != 64 {
+		return nil, notKey
+	}
 	var b [32]byte
 	defer clear(b[:])
 	n, err := hex.Decode(b[:], text)
 	var s secp256k1.ModNScalar
 	defer s.Zero()
-	if err != nil || len(text) != 64 || n != 32 || s.SetBytes(&b) != 0 || s.IsZero() {
-		return nil, fmt.Errorf("%s is not a hex secp256k1 private key", path)
+	if err != nil || n != 32 || s.SetBytes(&b) != 0 || s.IsZero() {
+		return nil, notKey
 	}
 	return secp256k1.NewPrivateKey(&s), nil
 }
