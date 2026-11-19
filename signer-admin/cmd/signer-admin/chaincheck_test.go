@@ -39,6 +39,7 @@ type testChainFile struct {
 	GenesisForkVersion    string `json:"genesis_fork_version"`
 	HeadSlot              uint64 `json:"head_slot"`
 	Epoch                 uint64 `json:"epoch"`
+	HeadTime              string `json:"head_time"`
 	Time                  string `json:"time"`
 	Validators            []struct {
 		Pubkey string `json:"pubkey"`
@@ -88,18 +89,20 @@ func TestChainExport(t *testing.T) {
 	root := mustHexRoot(t, mainnetRoot)
 	known := map[cloud.Pubkey]string{c.groups[0]: "active_ongoing", c.sharePub(t, 1, 2): "pending_queued"}
 	var ids []string
-	beacon := fakeBeacon(t, root, known, &ids)
 	at := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
 	defer func(f func() time.Time) { now = f }(now)
 	now = func() time.Time { return at }
+	beacon := fakeBeacon(t, root, known, &ids)
 
 	out := dir + "/chain.json"
 	res := mustTool(t, "chain-export", "-beacon", beacon.URL, "-lock", lock, "-out", out)
 	wantIn(t, res, "10 keys", "wrote "+out)
 	f := readTestChainFile(t, out)
-	if f.Format != "signer-admin chain-export 1" || f.GenesisValidatorsRoot != mainnetRoot || f.GenesisForkVersion != "0x00000000" ||
-		f.HeadSlot != 100 || f.Epoch != 3 || f.Time != "2026-11-19T10:00:00Z" {
-		t.Fatalf("chain file header %+v", f)
+	slot := fakeHeadSlot(at, 0)
+	headTime := time.Unix(int64(fakeGenesisTime+slot*fakeSlotSeconds), 0).UTC().Format(time.RFC3339)
+	if f.Format != "signer-admin chain-export 2" || f.GenesisValidatorsRoot != mainnetRoot || f.GenesisForkVersion != "0x00000000" ||
+		f.HeadSlot != slot || f.Epoch != slot/32 || f.HeadTime != headTime || f.Time != "2026-11-19T10:00:00Z" {
+		t.Fatalf("chain file header %+v, want head slot %d at %s", f, slot, headTime)
 	}
 	want := map[string]string{}
 	for v, g := range c.groups {
@@ -223,7 +226,8 @@ func TestDVShareProdChainCheck(t *testing.T) {
 				}
 			}
 		}, "1 of 3 group keys"},
-		{"another format", func(m map[string]any) { m["format"] = "signer-admin chain-export 2" }, "format"},
+		{"format 1", func(m map[string]any) { m["format"] = "signer-admin chain-export 1"; delete(m, "head_time") }, "format"},
+		{"another format", func(m map[string]any) { m["format"] = "signer-admin chain-export 3" }, "format"},
 	} {
 		p := editChainFile(t, chain, strings.ReplaceAll(x.name, " ", "-"), x.change)
 		wantIn(t, failTool(t, append(draft, "-chain-file", p)...), x.want)
@@ -253,5 +257,101 @@ func TestDVShareNonProdChainCheck(t *testing.T) {
 	wantIn(t, mustTool(t, append(draft, "-chain-file", hoodiChain)...), "import order for s2")
 	if asked.Len() != 0 {
 		t.Fatalf("asked with the chain file: %q", asked.String())
+	}
+}
+
+// stalledNodes are beacon nodes that say is_syncing false but whose chain
+// state is not current, each with the text of its refusal.
+func stalledNodes(gvr [32]byte, known map[cloud.Pubkey]string, ids *[]string) []struct {
+	name string
+	node fakeNode
+	want string
+} {
+	return []struct {
+		name string
+		node fakeNode
+		want string
+	}{
+		{"head 16 minutes behind", fakeNode{gvr: gvr, headLag: 16 * time.Minute, known: known, ids: ids}, "behind this machine's clock"},
+		{"head a day behind", fakeNode{gvr: gvr, headLag: 24 * time.Hour, known: known, ids: ids}, "behind this machine's clock"},
+		{"head ahead", fakeNode{gvr: gvr, headLag: -10 * time.Minute, known: known, ids: ids}, "ahead of this machine's clock"},
+		{"optimistic", fakeNode{gvr: gvr, optimistic: true, known: known, ids: ids}, "is_optimistic true"},
+		{"execution client offline", fakeNode{gvr: gvr, elOffline: true, known: known, ids: ids}, "el_offline true"},
+	}
+}
+
+// A node that says it is synced but whose head is more than
+// chainHeadMaxLag behind the clock (or ahead of it), or that is
+// optimistic or has lost its execution client, is refused at chain-export
+// and at -beacon before any key is looked up. A head a few minutes
+// behind passes.
+func TestChainCheckStalledNode(t *testing.T) {
+	f := newDVFakeMainnet(t)
+	root := mustHexRoot(t, mainnetRoot)
+	allGroups := map[cloud.Pubkey]string{}
+	for _, g := range f.c.groups {
+		allGroups[g] = "active_ongoing"
+	}
+	body := f.fc.path("import.bin")
+	draft := []string{"import-draft", "-cluster", f.fc.cluster, "-signer", "s2", "-split", f.split, "-lock", f.lock, "-out", body}
+	chain := f.fc.path("chain.json")
+	var ids []string
+	for _, x := range stalledNodes(root, allGroups, &ids) {
+		ids = nil
+		srv := fakeBeaconNode(t, x.node)
+		wantIn(t, failTool(t, "chain-export", "-beacon", srv.URL, "-lock", f.lock, "-out", chain), x.want)
+		if _, err := os.Stat(chain); err == nil {
+			t.Fatalf("%s: chain-export wrote a file", x.name)
+		}
+		wantIn(t, failTool(t, append(draft, "-beacon", srv.URL)...), x.want)
+		if _, err := os.Stat(body); err == nil {
+			t.Fatalf("%s: import-draft wrote an order", x.name)
+		}
+		if len(ids) != 0 {
+			t.Fatalf("%s: %d key lookups on a stalled node", x.name, len(ids))
+		}
+	}
+	lagging := fakeBeaconNode(t, fakeNode{gvr: root, headLag: 10 * time.Minute, known: allGroups, ids: &ids})
+	wantIn(t, mustTool(t, append(draft, "-beacon", lagging.URL)...), "import order for s2")
+	mustTool(t, "chain-export", "-beacon", lagging.URL, "-lock", f.lock, "-out", chain)
+}
+
+// import-draft ages a chain file from the node's head time, not only from
+// the export time: a file exported now from a node whose head is old is
+// stale. It refuses a head time older than chainFileMaxAge, ahead of the
+// clock, missing, or further behind the export time than chain-export
+// allows.
+func TestChainFileHeadTime(t *testing.T) {
+	f := newDVFakeMainnet(t)
+	root := mustHexRoot(t, mainnetRoot)
+	allGroups := map[cloud.Pubkey]string{}
+	for _, g := range f.c.groups {
+		allGroups[g] = "active_ongoing"
+	}
+	body := f.fc.path("import.bin")
+	draft := []string{"import-draft", "-cluster", f.fc.cluster, "-signer", "s2", "-split", f.split, "-lock", f.lock, "-out", body}
+	fakePrompt(t, true, "")
+	var ids []string
+	chain := f.fc.path("chain.json")
+	mustTool(t, "chain-export", "-beacon", fakeBeacon(t, root, allGroups, &ids).URL, "-lock", f.lock, "-out", chain)
+	wantIn(t, mustTool(t, append(draft, "-chain-file", chain)...), "import order for s2")
+
+	at := time.Now().UTC().Truncate(time.Second)
+	for _, x := range []struct {
+		name   string
+		change func(m map[string]any)
+		want   string
+	}{
+		{"head older than a day", func(m map[string]any) {
+			m["head_time"] = at.Add(-chainMaxAgeForTest - time.Minute).Format(time.RFC3339)
+		}, "chain state"},
+		{"head ahead of the clock", func(m map[string]any) { m["head_time"] = at.Add(time.Hour).Format(time.RFC3339) }, "is after this machine's clock"},
+		{"no head time", func(m map[string]any) { delete(m, "head_time") }, "no head_time"},
+		{"head far behind the export", func(m map[string]any) {
+			m["head_time"] = at.Add(-time.Hour).Format(time.RFC3339)
+		}, "behind"},
+	} {
+		p := editChainFile(t, chain, strings.ReplaceAll(x.name, " ", "-"), x.change)
+		wantIn(t, failTool(t, append(draft, "-chain-file", p)...), x.want)
 	}
 }

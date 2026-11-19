@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	cloud "github.com/lidofinance/tee-signer/signer-protocol"
 )
@@ -77,28 +78,72 @@ func slicesWith(s []cloud.Pubkey, i int, v cloud.Pubkey) []cloud.Pubkey {
 // parameter.
 func fakeBeacon(t *testing.T, gvr [32]byte, known map[cloud.Pubkey]string, ids *[]string) *httptest.Server {
 	t.Helper()
-	return fakeBeaconSync(t, gvr, "false", known, ids)
+	return fakeBeaconNode(t, fakeNode{gvr: gvr, known: known, ids: ids})
 }
 
 // fakeBeaconSync is fakeBeacon whose node/syncing answer says
 // is_syncing = syncing ("bad": an answer that does not parse).
 func fakeBeaconSync(t *testing.T, gvr [32]byte, syncing string, known map[cloud.Pubkey]string, ids *[]string) *httptest.Server {
 	t.Helper()
+	return fakeBeaconNode(t, fakeNode{gvr: gvr, syncing: syncing, known: known, ids: ids})
+}
+
+// fakeGenesisTime and fakeSlotSeconds are the genesis_time and
+// SECONDS_PER_SLOT of the fake beacon node: mainnet's.
+const (
+	fakeGenesisTime = 1606824023
+	fakeSlotSeconds = 12
+)
+
+// fakeNode is what a fake beacon node says. Its zero knobs are a synced,
+// healthy node of genesis fork version 0x00000000 whose head is the
+// current slot.
+type fakeNode struct {
+	gvr  [32]byte
+	fork [4]byte
+	// syncing is the is_syncing value, "false" when empty; "bad" is an
+	// answer that does not parse.
+	syncing string
+	// optimistic and elOffline are is_optimistic and el_offline.
+	optimistic, elOffline bool
+	// headLag is how far the head slot starts before the clock (now() when
+	// the fake starts); a negative lag puts the head ahead of the clock.
+	headLag time.Duration
+	known   map[cloud.Pubkey]string
+	ids     *[]string
+}
+
+// fakeHeadSlot is the slot the fake node of lag headLag has as its head
+// at time at.
+func fakeHeadSlot(at time.Time, headLag time.Duration) uint64 {
+	return uint64(at.Add(-headLag).Unix()-fakeGenesisTime) / fakeSlotSeconds
+}
+
+// fakeBeaconNode is a beacon node that says what n says. It answers the
+// validators endpoint from n.known, key to status; unknown keys are left
+// out, as a beacon node does. It records each id parameter in n.ids.
+func fakeBeaconNode(t *testing.T, n fakeNode) *httptest.Server {
+	t.Helper()
+	if n.syncing == "" {
+		n.syncing = "false"
+	}
+	clock := now // read here, not in the handler, which runs on another goroutine
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/eth/v1/beacon/genesis" {
-			fmt.Fprintf(w, `{"data":{"genesis_time":"1606824023","genesis_validators_root":"0x%x","genesis_fork_version":"0x00000000"}}`, gvr)
+			fmt.Fprintf(w, `{"data":{"genesis_time":"%d","genesis_validators_root":"0x%x","genesis_fork_version":"0x%x"}}`, fakeGenesisTime, n.gvr, n.fork)
 			return
 		}
 		if r.Method == http.MethodGet && r.URL.Path == "/eth/v1/node/syncing" {
-			if syncing == "bad" {
+			if n.syncing == "bad" {
 				fmt.Fprint(w, `{"data":`)
 				return
 			}
-			fmt.Fprintf(w, `{"data":{"head_slot":"100","sync_distance":"0","is_syncing":%s,"is_optimistic":false,"el_offline":false}}`, syncing)
+			fmt.Fprintf(w, `{"data":{"head_slot":"%d","sync_distance":"0","is_syncing":%s,"is_optimistic":%v,"el_offline":%v}}`,
+				fakeHeadSlot(clock(), n.headLag), n.syncing, n.optimistic, n.elOffline)
 			return
 		}
 		if r.Method == http.MethodGet && r.URL.Path == "/eth/v1/config/spec" {
-			fmt.Fprint(w, `{"data":{"CONFIG_NAME":"mainnet","SECONDS_PER_SLOT":"12","SLOTS_PER_EPOCH":"32"}}`)
+			fmt.Fprintf(w, `{"data":{"CONFIG_NAME":"mainnet","SECONDS_PER_SLOT":"%d","SLOTS_PER_EPOCH":"32"}}`, fakeSlotSeconds)
 			return
 		}
 		if r.Method != http.MethodGet || r.URL.Path != "/eth/v1/beacon/states/head/validators" {
@@ -106,7 +151,7 @@ func fakeBeaconSync(t *testing.T, gvr [32]byte, syncing string, known map[cloud.
 			return
 		}
 		id := r.URL.Query().Get("id")
-		*ids = append(*ids, id)
+		*n.ids = append(*n.ids, id)
 		type val struct {
 			Status    string `json:"status"`
 			Validator struct {
@@ -117,7 +162,7 @@ func fakeBeaconSync(t *testing.T, gvr [32]byte, syncing string, known map[cloud.
 			Data []val `json:"data"`
 		}{Data: []val{}}
 		for _, k := range strings.Split(id, ",") {
-			for pk, st := range known {
+			for pk, st := range n.known {
 				if pk.String() == k {
 					v := val{Status: st}
 					v.Validator.Pubkey = k
@@ -219,7 +264,7 @@ func TestCheckBeaconWrongNode(t *testing.T) {
 		ids = nil
 		srv = fakeBeaconSync(t, testGVR, syncing, map[cloud.Pubkey]string{}, &ids)
 		_, err = checkBeacon(ctx, srv.URL, testGVR, shares, &out)
-		if err == nil || !strings.Contains(err.Error(), "the beacon node is not synced; drop -beacon to skip") || len(ids) != 0 {
+		if err == nil || !strings.Contains(err.Error(), "the beacon node is not synced: ") || !strings.Contains(err.Error(), "; drop -beacon to skip") || len(ids) != 0 {
 			t.Fatalf("is_syncing %s: %v, %d lookups", syncing, err, len(ids))
 		}
 	}

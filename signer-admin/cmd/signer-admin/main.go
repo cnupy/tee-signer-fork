@@ -139,8 +139,11 @@
 //	    For the chain check of import-draft -chain-file on a machine
 //	    without network: ask a synced beacon node about every group key
 //	    and public share of the lock and write its answer, the chain's
-//	    genesis values, the head epoch and the time (chaincheck.go).
-//	    import-draft takes the file for at most 24 hours.
+//	    genesis values, the head slot, epoch and time, and the time
+//	    (chaincheck.go). It refuses a node whose head is more than 15
+//	    minutes behind the clock, or that is optimistic or has its
+//	    execution client offline. import-draft takes the file for at
+//	    most 24 hours from the head time.
 //	signer-admin dv-indices, dv-exit, dv-exit-post
 //	    With the build tag dvt only: the exit route of dv_share signers
 //	    through the Obol API (dvexit.go, dvpost.go).

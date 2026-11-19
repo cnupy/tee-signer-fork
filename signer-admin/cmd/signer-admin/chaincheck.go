@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"time"
 
 	"github.com/lidofinance/tee-signer/governance/setupwire"
@@ -26,19 +25,21 @@ import (
 // carries public keys and their status only. The check trusts the node or
 // the file; the approvers' own check of each group key stays.
 
-// chainFileFormat names the format of a chain file.
-const chainFileFormat = "signer-admin chain-export 1"
+// chainFileFormat names the format of a chain file. Format 1 had no
+// head_time; import-draft refuses it.
+const chainFileFormat = "signer-admin chain-export 2"
 
-// chainFileMaxAge is the age past which import-draft refuses a chain file.
-// A key that became a validator after the export is not in the file, so
-// the file must be recent; a day leaves time to carry it to an offline
-// machine and draft there, the same working day. Export again for a later
-// draft.
+// chainFileMaxAge is the age past which import-draft refuses a chain file,
+// counted from the node's head time (and from the export time). A key
+// that became a validator after the head is not in the file, so the file
+// must be recent; a day leaves time to carry it to an offline machine and
+// draft there, the same working day. Export again for a later draft.
 const chainFileMaxAge = 24 * time.Hour
 
-// chainFileSkew is how far a chain file's time may be ahead of this
-// machine's clock: the two machines' clocks differ a little.
-const chainFileSkew = 5 * time.Minute
+// chainClockSkew is how far a chain file's times, or a beacon node's
+// head, may be ahead of this machine's clock: two machines' clocks differ
+// a little.
+const chainClockSkew = 5 * time.Minute
 
 // chainNotFound is the status of a key the beacon node does not know.
 const chainNotFound = "not_found"
@@ -51,6 +52,10 @@ type chainFile struct {
 	// HeadSlot and Epoch are the node's head when it answered.
 	HeadSlot uint64 `json:"head_slot"`
 	Epoch    uint64 `json:"epoch"`
+	// HeadTime is the start of the head slot, from the node's genesis_time
+	// and SECONDS_PER_SLOT, in UTC: the time of the chain state the file
+	// shows.
+	HeadTime time.Time `json:"head_time"`
 	// Time is this machine's clock at the export, in UTC.
 	Time time.Time `json:"time"`
 	// Validators lists each key of the lock, every group key followed by
@@ -92,35 +97,21 @@ func cmdChainExport(args []string, out io.Writer) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), beaconTimeout*time.Duration(4+len(keys)/beaconBatch))
 	defer cancel()
-	root, fork, err := beaconGenesis(ctx, *beacon)
+	g, err := beaconGenesis(ctx, *beacon)
 	if err != nil {
 		return err
 	}
-	synced, head, err := beaconSyncing(ctx, *beacon)
+	at := now()
+	head, err := beaconHead(ctx, *beacon, g, at)
 	if err != nil {
-		return fmt.Errorf("the beacon node is not synced: %w", err)
-	}
-	if !synced {
-		return errors.New("the beacon node is not synced: is_syncing true")
-	}
-	var spec struct {
-		Data struct {
-			SlotsPerEpoch string `json:"SLOTS_PER_EPOCH"`
-		} `json:"data"`
-	}
-	if err := beaconGet(ctx, *beacon, "/eth/v1/config/spec", "spec", 1<<20, &spec); err != nil {
 		return err
-	}
-	spe, err := strconv.ParseUint(spec.Data.SlotsPerEpoch, 10, 64)
-	if err != nil || spe == 0 {
-		return fmt.Errorf("beacon node spec: SLOTS_PER_EPOCH %q", spec.Data.SlotsPerEpoch)
 	}
 	known, err := beaconValidators(ctx, *beacon, keys)
 	if err != nil {
 		return err
 	}
-	f := chainFile{Format: chainFileFormat, GenesisValidatorsRoot: root, GenesisForkVersion: fork,
-		HeadSlot: head, Epoch: head / spe, Time: now().UTC().Truncate(time.Second)}
+	f := chainFile{Format: chainFileFormat, GenesisValidatorsRoot: g.Root, GenesisForkVersion: g.Fork,
+		HeadSlot: head.Slot, Epoch: head.Epoch, HeadTime: head.Time, Time: at.UTC().Truncate(time.Second)}
 	found := 0
 	for _, k := range keys {
 		st, ok := known[k]
@@ -138,8 +129,8 @@ func cmdChainExport(args []string, out io.Writer) error {
 	if err := os.WriteFile(*outPath, append(js, '\n'), 0o644); err != nil {
 		return err
 	}
-	fprintf(out, "chain-export %s: %d keys (%d validators, %d public shares each), %d of them validators on chain; genesis_validators_root %s, genesis_fork_version 0x%x, epoch %d, %s\nwrote %s\n",
-		*lockPath, len(keys), len(ls.Validators), ls.N, found, root, fork, f.Epoch, f.Time.Format(time.RFC3339), *outPath)
+	fprintf(out, "chain-export %s: %d keys (%d validators, %d public shares each), %d of them validators on chain; genesis_validators_root %s, genesis_fork_version 0x%x, head slot %d (epoch %d) at %s, exported %s\nwrote %s\n",
+		*lockPath, len(keys), len(ls.Validators), ls.N, found, g.Root, g.Fork, f.HeadSlot, f.Epoch, f.HeadTime.Format(time.RFC3339), f.Time.Format(time.RFC3339), *outPath)
 	return nil
 }
 
@@ -198,15 +189,17 @@ func checkDVChain(name string, ch *setupwire.Chain, shares map[cloud.Pubkey]clou
 }
 
 // readChainFile reads a chain file for an order on chain ch whose keys
-// are keys, at time at. The file must be of ch (both genesis values), at
-// most chainFileMaxAge old, and list every key.
+// are keys, at time at. The file must be of ch (both genesis values), list
+// every key, and be recent: its head time and export time at most
+// chainFileMaxAge before at and at most chainClockSkew after it, and the
+// head at most chainHeadMaxLag behind the export, as chain-export checks.
 func readChainFile(path string, ch *setupwire.Chain, keys []cloud.Pubkey, at time.Time) (*chainView, error) {
 	var f chainFile
 	if err := readStrictJSON(path, &f); err != nil {
 		return nil, fmt.Errorf("-chain-file: %w", err)
 	}
 	if f.Format != chainFileFormat {
-		return nil, fmt.Errorf("-chain-file %s: format %q, want %q (signer-admin chain-export)", path, f.Format, chainFileFormat)
+		return nil, fmt.Errorf("-chain-file %s: format %q, want %q: export it again with this signer-admin chain-export", path, f.Format, chainFileFormat)
 	}
 	if ch.GenesisValidatorsRoot == (cloud.Root{}) {
 		return nil, fmt.Errorf("-chain-file %s: the setup's chain has no genesis_validators_root to compare the file with", path)
@@ -215,14 +208,25 @@ func readChainFile(path string, ch *setupwire.Chain, keys []cloud.Pubkey, at tim
 		return nil, fmt.Errorf("-chain-file %s: the file is for another chain: genesis_validators_root %s, genesis_fork_version 0x%x; the setup's chain has %s, 0x%x (refusing)",
 			path, f.GenesisValidatorsRoot, f.GenesisForkVersion, ch.GenesisValidatorsRoot, ch.GenesisForkVersion)
 	}
+	rfc := func(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 	switch {
 	case f.Time.IsZero():
 		return nil, fmt.Errorf("-chain-file %s: no time", path)
-	case f.Time.After(at.Add(chainFileSkew)):
-		return nil, fmt.Errorf("-chain-file %s: exported at %s, after this machine's clock (%s)", path, f.Time.UTC().Format(time.RFC3339), at.UTC().Format(time.RFC3339))
+	case f.Time.After(at.Add(chainClockSkew)):
+		return nil, fmt.Errorf("-chain-file %s: exported at %s, after this machine's clock (%s)", path, rfc(f.Time), rfc(at))
 	case at.Sub(f.Time) > chainFileMaxAge:
-		return nil, fmt.Errorf("-chain-file %s: exported at %s, %s old, more than %s: export it again", path, f.Time.UTC().Format(time.RFC3339),
+		return nil, fmt.Errorf("-chain-file %s: exported at %s, %s old, more than %s: export it again", path, rfc(f.Time),
 			at.Sub(f.Time).Truncate(time.Minute), chainFileMaxAge)
+	case f.HeadTime.IsZero():
+		return nil, fmt.Errorf("-chain-file %s: no head_time", path)
+	case f.HeadTime.After(at.Add(chainClockSkew)):
+		return nil, fmt.Errorf("-chain-file %s: head_time %s is after this machine's clock (%s)", path, rfc(f.HeadTime), rfc(at))
+	case at.Sub(f.HeadTime) > chainFileMaxAge:
+		return nil, fmt.Errorf("-chain-file %s: the chain state is from %s (head slot %d), %s old, more than %s: export it again from a synced node",
+			path, rfc(f.HeadTime), f.HeadSlot, at.Sub(f.HeadTime).Truncate(time.Minute), chainFileMaxAge)
+	case f.HeadTime.After(f.Time.Add(chainClockSkew)) || f.Time.Sub(f.HeadTime) > chainHeadMaxLag:
+		return nil, fmt.Errorf("-chain-file %s: head_time %s and export time %s: chain-export takes a head at most %s behind its clock and not ahead of it (refusing)",
+			path, rfc(f.HeadTime), rfc(f.Time), chainHeadMaxLag)
 	}
 	listed := make(map[cloud.Pubkey]string, len(f.Validators))
 	for _, v := range f.Validators {

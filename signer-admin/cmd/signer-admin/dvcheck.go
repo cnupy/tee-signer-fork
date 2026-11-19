@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -87,23 +88,55 @@ func beaconGet(ctx context.Context, base, path, what string, limit int64, v any)
 	return nil
 }
 
+// nodeGenesis is a beacon node's answer to GET /eth/v1/beacon/genesis.
+type nodeGenesis struct {
+	Root cloud.Root
+	Fork cloud.Version
+	Time uint64 // genesis_time, in Unix seconds
+}
+
 // beaconGenesis asks the beacon node at base for its chain's
-// genesis_validators_root and genesis fork version
-// (GET /eth/v1/beacon/genesis).
-func beaconGenesis(ctx context.Context, base string) (cloud.Root, cloud.Version, error) {
+// genesis_validators_root, genesis fork version and genesis time.
+func beaconGenesis(ctx context.Context, base string) (*nodeGenesis, error) {
 	var r struct {
 		Data struct {
+			Time string         `json:"genesis_time"`
 			Root *cloud.Root    `json:"genesis_validators_root"`
 			Fork *cloud.Version `json:"genesis_fork_version"`
 		} `json:"data"`
 	}
 	if err := beaconGet(ctx, base, "/eth/v1/beacon/genesis", "genesis", 1<<16, &r); err != nil {
-		return cloud.Root{}, cloud.Version{}, err
+		return nil, err
 	}
-	if r.Data.Root == nil || r.Data.Fork == nil {
-		return cloud.Root{}, cloud.Version{}, errors.New("beacon node genesis: no genesis_validators_root or genesis_fork_version in the answer")
+	if r.Data.Root == nil || r.Data.Fork == nil || r.Data.Time == "" {
+		return nil, errors.New("beacon node genesis: no genesis_time, genesis_validators_root or genesis_fork_version in the answer")
 	}
-	return *r.Data.Root, *r.Data.Fork, nil
+	t, err := strconv.ParseUint(r.Data.Time, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("beacon node genesis: genesis_time %q", r.Data.Time)
+	}
+	return &nodeGenesis{Root: *r.Data.Root, Fork: *r.Data.Fork, Time: t}, nil
+}
+
+// beaconSpec reads SECONDS_PER_SLOT and SLOTS_PER_EPOCH from the beacon
+// node at base (GET /eth/v1/config/spec). Neither may be 0.
+func beaconSpec(ctx context.Context, base string) (secondsPerSlot, slotsPerEpoch uint64, err error) {
+	var spec struct {
+		Data struct {
+			SecondsPerSlot string `json:"SECONDS_PER_SLOT"`
+			SlotsPerEpoch  string `json:"SLOTS_PER_EPOCH"`
+		} `json:"data"`
+	}
+	if err := beaconGet(ctx, base, "/eth/v1/config/spec", "spec", 1<<20, &spec); err != nil {
+		return 0, 0, err
+	}
+	if secondsPerSlot, err = strconv.ParseUint(spec.Data.SecondsPerSlot, 10, 64); err != nil || secondsPerSlot == 0 {
+		return 0, 0, fmt.Errorf("beacon node spec: SECONDS_PER_SLOT %q", spec.Data.SecondsPerSlot)
+	}
+	if slotsPerEpoch, err = strconv.ParseUint(spec.Data.SlotsPerEpoch, 10, 64); err != nil || slotsPerEpoch == 0 {
+		return 0, 0, fmt.Errorf("beacon node spec: SLOTS_PER_EPOCH %q", spec.Data.SlotsPerEpoch)
+	}
+	return secondsPerSlot, slotsPerEpoch, nil
 }
 
 // beaconValidators asks the beacon node at base for the validators with the
@@ -159,35 +192,104 @@ func beaconValidators(ctx context.Context, base string, keys []cloud.Pubkey) (ma
 	return got, nil
 }
 
-// beaconSyncing reads the beacon node's sync state at base
-// (GET /eth/v1/node/syncing): whether it says it is synced (is_syncing
-// false) and its head slot. An answer that does not read is an error.
-func beaconSyncing(ctx context.Context, base string) (synced bool, headSlot uint64, err error) {
-	var r struct {
-		Data *struct {
-			IsSyncing *bool  `json:"is_syncing"`
-			HeadSlot  string `json:"head_slot"`
-		} `json:"data"`
-	}
-	if err := beaconGet(ctx, base, "/eth/v1/node/syncing", "syncing", 1<<16, &r); err != nil {
-		return false, 0, err
-	}
-	if r.Data == nil || r.Data.IsSyncing == nil {
-		return false, 0, errors.New("beacon node syncing: no is_syncing in the answer")
-	}
-	if r.Data.HeadSlot != "" {
-		if headSlot, err = strconv.ParseUint(r.Data.HeadSlot, 10, 64); err != nil {
-			return false, 0, fmt.Errorf("beacon node syncing: head_slot %q", r.Data.HeadSlot)
-		}
-	}
-	return !*r.Data.IsSyncing, headSlot, nil
+// nodeSync is a beacon node's answer to GET /eth/v1/node/syncing. A field
+// the node leaves out is nil or empty.
+type nodeSync struct {
+	IsSyncing    *bool  `json:"is_syncing"`
+	IsOptimistic *bool  `json:"is_optimistic"`
+	ELOffline    *bool  `json:"el_offline"`
+	HeadSlot     string `json:"head_slot"`
 }
 
-// beaconSynced reports whether the beacon node at base says it is synced
-// (beaconSyncing).
+// beaconSyncing reads the beacon node's sync state at base. An answer that
+// does not read, or has no is_syncing, is an error.
+func beaconSyncing(ctx context.Context, base string) (*nodeSync, error) {
+	var r struct {
+		Data *nodeSync `json:"data"`
+	}
+	if err := beaconGet(ctx, base, "/eth/v1/node/syncing", "syncing", 1<<16, &r); err != nil {
+		return nil, err
+	}
+	if r.Data == nil || r.Data.IsSyncing == nil {
+		return nil, errors.New("beacon node syncing: no is_syncing in the answer")
+	}
+	return r.Data, nil
+}
+
+// beaconSynced reports whether the beacon node at base says it is synced:
+// is_syncing false (beaconSyncing).
 func beaconSynced(ctx context.Context, base string) (bool, error) {
-	synced, _, err := beaconSyncing(ctx, base)
-	return synced, err
+	s, err := beaconSyncing(ctx, base)
+	if err != nil {
+		return false, err
+	}
+	return !*s.IsSyncing, nil
+}
+
+// chainHeadMaxLag is how far the start of a beacon node's head slot may
+// be behind this machine's clock for the chain check. A synced node's
+// head is the current slot, or a few slots back after missed blocks. 15
+// minutes (75 slots of 12 s, over two epochs) lets through a run of
+// missed blocks and a small difference between the node's clock and this
+// machine's. A node further behind has lost its peers or its execution
+// client while it may still say is_syncing false, and does not know the
+// validators deposited since its head.
+const chainHeadMaxLag = 15 * time.Minute
+
+// chainHead is the head of a beacon node that passed beaconHead.
+type chainHead struct {
+	Slot  uint64
+	Epoch uint64
+	Time  time.Time // the start of the head slot, in UTC
+}
+
+// beaconHead reads the head of the beacon node at base, whose genesis is
+// g, and checks that the node is current at time at: is_syncing,
+// is_optimistic and el_offline false, and the head slot, timed from
+// genesis_time and SECONDS_PER_SLOT, starting at most chainHeadMaxLag
+// before at and at most chainClockSkew after it. Each refusal of the
+// node's state starts with "the beacon node is not synced".
+func beaconHead(ctx context.Context, base string, g *nodeGenesis, at time.Time) (*chainHead, error) {
+	s, err := beaconSyncing(ctx, base)
+	if err != nil {
+		return nil, fmt.Errorf("the beacon node is not synced: %w", err)
+	}
+	const notSynced = "the beacon node is not synced: "
+	switch {
+	case *s.IsSyncing:
+		return nil, errors.New(notSynced + "is_syncing true")
+	case s.IsOptimistic == nil:
+		return nil, errors.New(notSynced + "no is_optimistic in its syncing answer")
+	case *s.IsOptimistic:
+		return nil, errors.New(notSynced + "is_optimistic true, its execution client has not verified the head")
+	case s.ELOffline == nil:
+		return nil, errors.New(notSynced + "no el_offline in its syncing answer")
+	case *s.ELOffline:
+		return nil, errors.New(notSynced + "el_offline true, its execution client is offline")
+	case s.HeadSlot == "":
+		return nil, errors.New(notSynced + "no head_slot in its syncing answer")
+	}
+	slot, err := strconv.ParseUint(s.HeadSlot, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("beacon node syncing: head_slot %q", s.HeadSlot)
+	}
+	sps, spe, err := beaconSpec(ctx, base)
+	if err != nil {
+		return nil, err
+	}
+	if g.Time > math.MaxInt64 || slot > (math.MaxInt64-g.Time)/sps {
+		return nil, fmt.Errorf("beacon node: head slot %d at genesis_time %d is out of range", slot, g.Time)
+	}
+	h := &chainHead{Slot: slot, Epoch: slot / spe, Time: time.Unix(int64(g.Time+slot*sps), 0).UTC()}
+	switch lag := at.Sub(h.Time); {
+	case lag > chainHeadMaxLag:
+		return nil, fmt.Errorf(notSynced+"its head, slot %d, started at %s, %s behind this machine's clock (%s), more than %s",
+			slot, h.Time.Format(time.RFC3339), lag.Truncate(time.Second), at.UTC().Format(time.RFC3339), chainHeadMaxLag)
+	case -lag > chainClockSkew:
+		return nil, fmt.Errorf("the beacon node's head, slot %d, starts at %s, ahead of this machine's clock (%s) by more than %s: check both clocks",
+			slot, h.Time.Format(time.RFC3339), at.UTC().Format(time.RFC3339), chainClockSkew)
+	}
+	return h, nil
 }
 
 // chainView is what the chain says about the keys of an order: the status
@@ -211,23 +313,21 @@ func orderKeys(shares map[cloud.Pubkey]cloud.Pubkey) []cloud.Pubkey {
 }
 
 // beaconView looks up keys on the beacon node at base. The node must serve
-// the setup's chain (gvr, its genesis_validators_root) and be synced.
+// the setup's chain (gvr, its genesis_validators_root) and be current
+// (beaconHead).
 func beaconView(ctx context.Context, base string, gvr [32]byte, keys []cloud.Pubkey) (*chainView, error) {
 	if gvr == ([32]byte{}) {
 		return nil, errors.New("-beacon: the setup's chain has no genesis_validators_root to compare the beacon node with; drop -beacon to skip the check")
 	}
-	got, _, err := beaconGenesis(ctx, base)
+	g, err := beaconGenesis(ctx, base)
 	if err != nil {
 		return nil, fmt.Errorf("-beacon: %w", err)
 	}
-	if got != gvr {
-		return nil, fmt.Errorf("-beacon: the beacon node serves another chain: genesis_validators_root %s, the setup's chain has %s (refusing)", got, cloud.Root(gvr))
+	if g.Root != gvr {
+		return nil, fmt.Errorf("-beacon: the beacon node serves another chain: genesis_validators_root %s, the setup's chain has %s (refusing)", g.Root, cloud.Root(gvr))
 	}
-	if synced, err := beaconSynced(ctx, base); err != nil || !synced {
-		if err != nil {
-			return nil, fmt.Errorf("-beacon: the beacon node is not synced; drop -beacon to skip (%v)", err)
-		}
-		return nil, errors.New("-beacon: the beacon node is not synced; drop -beacon to skip")
+	if _, err := beaconHead(ctx, base, g, now()); err != nil {
+		return nil, fmt.Errorf("-beacon: %v; drop -beacon to skip the check", err)
 	}
 	known, err := beaconValidators(ctx, base, keys)
 	if err != nil {
