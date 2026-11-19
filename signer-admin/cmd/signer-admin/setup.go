@@ -16,18 +16,19 @@ import (
 )
 
 // The setup file is the human setup format of setupwire ("key = value",
-// setup format 2) with one
-// [signer NAME] section per signer. The lines before the first section
-// belong to every signer: setup_format_version, handover_generation, the
-// chain, the safety settings, max_keys, slashing_log_min_lock_days and both
-// config groups, and any platform key that is the same for all
-// (allowed_client_ca, for example). A section holds the keys of one signer:
-// platform, stores, sealing key release, network entry names. NAME becomes the
-// signer's signer_name. signing_mode (threshold or single) is shared: a
-// single-mode file has one section. The tool draws cluster_id and the salts: the policy
-// salts once for the cluster, so every signer with the same public values
-// has the same policy_root, and one platform salt per signer. So the file
-// names neither signer_name nor cluster_id nor any salt.
+// setup format 2) with one [signer NAME] section per signer. The lines
+// before the first section belong to every signer: setup_format_version,
+// handover_generation, the chain, the safety settings, max_keys,
+// slashing_log_min_lock_days and both config groups, and any platform key
+// that is the same for all (allowed_client_ca, for example). A section
+// holds the keys of one signer: platform, stores, sealing key release,
+// network entry names. NAME becomes the signer's signer_name. signing_mode
+// (threshold, single or dv_share) is shared: a single-mode file has one
+// section, and a dv_share file may have fewer signers than the Charon
+// cluster has operators. The tool draws cluster_id and the salts: the
+// policy salts once for the cluster, so every signer with the same public
+// values has the same policy_root, and one platform salt per signer. So
+// the file names neither signer_name nor cluster_id nor any salt.
 
 var sectionRE = regexp.MustCompile(`^\s*\[signer\s+([^\]\s]+)\s*\]\s*(#.*)?$`)
 
