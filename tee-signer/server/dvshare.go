@@ -38,8 +38,10 @@ func CheckSigningMode(m setupwire.SigningMode) error {
 type dvState struct {
 	// groups maps the group key of each dv_share key this runner stores,
 	// loads or is adding to that key: one share per distributed validator
-	// (claimGroups). Under admitMu.
+	// (claimGroups). shares is the other direction, key to group key.
+	// Under admitMu.
 	groups map[backend.Pubkey]backend.Pubkey
+	shares map[backend.Pubkey]backend.Pubkey
 }
 
 // shareRecord is the sealed form of a stored share, with group_pubkey
@@ -134,12 +136,15 @@ func (s *Server) addValidator(pk backend.Pubkey, secret *[32]byte, index uint64,
 // that another key of this runner stores, loads or is adding: a dv_share
 // runner holds one share of each distributed validator, as a threshold
 // runner holds one share of each validator, and with t shares it would
-// hold the whole key. It returns the group keys it took, for
-// unclaimGroups when the import stores nothing.
+// hold the whole key. It also refuses a key that is the group key of such
+// a key, and a group key that is such a key: the runner would hold a
+// validator key next to a share of it. It cannot see two shares under two
+// made-up group keys; the approvers check the group keys. It returns the
+// group keys it took, for unclaimGroups when the import stores nothing.
 func (s *Server) claimGroups(pks []backend.Pubkey, groups []*backend.Pubkey) ([]backend.Pubkey, error) {
 	s.admitMu.Lock()
 	defer s.admitMu.Unlock()
-	claim := map[backend.Pubkey]backend.Pubkey{}
+	claim, claimShares := map[backend.Pubkey]backend.Pubkey{}, map[backend.Pubkey]backend.Pubkey{}
 	for i, g := range groups {
 		if g == nil {
 			continue
@@ -153,15 +158,42 @@ func (s *Server) claimGroups(pks []backend.Pubkey, groups []*backend.Pubkey) ([]
 				"key %s is a share of validator %s, and this runner holds or is adding its share %s: a dv_share runner holds one share of each validator",
 				pks[i].String()[:18], g.String()[:18], have.String()[:18])}
 		}
-		claim[*g] = pks[i]
+		claim[*g], claimShares[pks[i]] = pks[i], *g
+	}
+	// After the loop, so that the order of a batch does not matter.
+	for i, g := range groups {
+		if g == nil {
+			continue
+		}
+		share, ok := s.groups[pks[i]]
+		if !ok {
+			share, ok = claim[pks[i]]
+		}
+		if ok {
+			return nil, &backend.RefusedError{Code: backend.StatusDuplicate, Detail: fmt.Sprintf(
+				"key %s is the validator key of share %s, which this runner holds or is adding: a dv_share runner never holds a validator key and a share of it",
+				pks[i].String()[:18], share.String()[:18])}
+		}
+		_, ok = s.shares[*g]
+		if !ok {
+			_, ok = claimShares[*g]
+		}
+		if ok {
+			return nil, &backend.RefusedError{Code: backend.StatusDuplicate, Detail: fmt.Sprintf(
+				"key %s is a share of validator %s, and this runner holds or is adding that validator key as a share: a dv_share runner never holds a validator key and a share of it",
+				pks[i].String()[:18], g.String()[:18])}
+		}
 	}
 	if s.groups == nil {
 		s.groups = map[backend.Pubkey]backend.Pubkey{}
 	}
+	if s.shares == nil {
+		s.shares = map[backend.Pubkey]backend.Pubkey{}
+	}
 	var took []backend.Pubkey
 	for g, pk := range claim {
 		if _, ok := s.groups[g]; !ok {
-			s.groups[g] = pk
+			s.groups[g], s.shares[pk] = pk, g
 			took = append(took, g)
 		}
 	}
@@ -174,6 +206,7 @@ func (s *Server) unclaimGroups(took []backend.Pubkey) {
 	s.admitMu.Lock()
 	defer s.admitMu.Unlock()
 	for _, g := range took {
+		delete(s.shares, s.groups[g])
 		delete(s.groups, g)
 	}
 }

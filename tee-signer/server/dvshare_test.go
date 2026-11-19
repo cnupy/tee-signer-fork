@@ -3,6 +3,7 @@
 package server
 
 import (
+	"math/big"
 	"strings"
 	"sync"
 	"testing"
@@ -402,5 +403,193 @@ func TestDVShareExit(t *testing.T) {
 	}
 	if _, _, err := exit(d.group, 9); backend.StatusOf(err) != backend.StatusUnknownValidator {
 		t.Fatalf("exit under the group key: %v, want UNKNOWN_VALIDATOR", err)
+	}
+}
+
+// dvSplitUnder is share 1 of a fresh 2-of-3 split of the key gsk:
+// f(x) = gsk + a*x mod r, with a random. It returns the share and the
+// split's commitments, the public keys of gsk and a.
+func dvSplitUnder(t *testing.T, gsk [32]byte) ([32]byte, []backend.Pubkey) {
+	t.Helper()
+	a, err := software.NewSecret()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := new(big.Int).Add(new(big.Int).SetBytes(gsk[:]), new(big.Int).SetBytes(a[:]))
+	s.Mod(s, blsOrder)
+	var sk [32]byte
+	s.FillBytes(sk[:])
+	gpk, err := core.PubkeyOf(gsk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apk, err := core.PubkeyOf(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sk, []backend.Pubkey{gpk, apk}
+}
+
+// dvReq is the sealed import request of share 1 (secret sk) of the 2-of-3
+// split with these commitments, under an order the approvers signed for
+// its group key, commitments[0].
+func (e *tgtEnv) dvReq(sk [32]byte, commitments []backend.Pubkey, index uint64) backend.SealedImportRequest {
+	e.t.Helper()
+	pk, err := core.PubkeyOf(sk)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	order := e.importOrder([]byte{1, 2}, commitments[0], func(b *importorder.Body) {
+		b.T, b.N, b.ShareIndex = 2, 3, 1
+		b.Validators[0].CommitmentsHash = importorder.CommitmentsHash(commitments)
+	})
+	req := backend.SealedImportRequest{Pubkey: commitments[0], SharePubkey: pk, Index: index, Order: order,
+		T: 2, N: 3, ShareIndex: 1, Commitments: commitments}
+	if req.Sealed, err = sealedimport.Seal(e.sealTo(), &req, &sk); err != nil {
+		e.t.Fatal(err)
+	}
+	return req
+}
+
+// sendSealed sends req as IMPORT_SHARE_SEALED.
+func (e *tgtEnv) sendSealed(req backend.SealedImportRequest) error {
+	e.t.Helper()
+	p, err := wireadmin.EncodeImportSealed(&req)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	_, err = e.srv.dispatch(ctx, wire.Frame{Type: wireadmin.TypeImportSealed, Payload: p})
+	return err
+}
+
+// sendBatch sends reqs as one IMPORT_BATCH, under one order that names
+// each request's split.
+func (e *tgtEnv) sendBatch(reqs ...backend.SealedImportRequest) error {
+	e.t.Helper()
+	var entries []importorder.Entry
+	for i := range reqs {
+		entries = append(entries, importorder.Entry{Pubkey: reqs[i].Pubkey, CommitmentsHash: importorder.CommitmentsHash(reqs[i].Commitments)})
+		reqs[i].Order = nil
+	}
+	order := e.importOrder([]byte{1, 2}, reqs[0].Pubkey, func(b *importorder.Body) {
+		b.T, b.N, b.ShareIndex = 2, 3, 1
+		b.Validators = entries
+	})
+	p, err := wireadmin.EncodeImportBatch(order, reqs)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	_, err = e.srv.dispatch(ctx, wire.Frame{Type: wireadmin.TypeImportBatch, Payload: p})
+	return err
+}
+
+// neverBoth is the refusal of a validator key next to a share of it.
+const neverBoth = "never holds a validator key and a share of it"
+
+// wantNeverBoth fails the test unless err is that refusal and no key of
+// pks is loaded.
+func (e *tgtEnv) wantNeverBoth(what string, err error, pks ...backend.Pubkey) {
+	e.t.Helper()
+	if backend.StatusOf(err) != backend.StatusDuplicate || !strings.Contains(err.Error(), neverBoth) {
+		e.t.Errorf("%s: %v, want a DUPLICATE refusal (%s)", what, err, neverBoth)
+	}
+	for _, pk := range pks {
+		if hasKey(e.srv.Signer.Keys(), pk) {
+			e.t.Errorf("%s: key %s loaded", what, pk.String()[:18])
+		}
+	}
+}
+
+// The one-share rule compares group keys, and the runner cannot tell a
+// made-up group key (the approvers check it). It can see two cases in
+// itself, which would let it hold a validator key next to a share of
+// that validator: a key that is the group key of a share it holds, and a
+// group key that is a key it holds. The sealed import and the batch
+// import refuse both, also after a restart.
+func TestDVShareValidatorKeyNextToShareRefused(t *testing.T) {
+	for _, way := range []string{"sealed import", "batch import"} {
+		for _, what := range []string{"the group key", "a share under the share's key"} {
+			t.Run(way+" of "+what, func(t *testing.T) {
+				e := newDVEnv(t)
+				gsk, group := newKey(t)
+				ssk, comm := dvSplitUnder(t, gsk)
+				if err := e.sendSealed(e.dvReq(ssk, comm, 1)); err != nil {
+					t.Fatal(err)
+				}
+				send := e.sendSealed
+				if way == "batch import" {
+					send = func(r backend.SealedImportRequest) error { return e.sendBatch(r) }
+				}
+				for _, when := range []string{"before a restart", "after a restart"} {
+					if when == "after a restart" {
+						e.restart()
+					}
+					var (
+						req backend.SealedImportRequest
+						pk  backend.Pubkey
+					)
+					if what == "the group key" {
+						// The validator key itself, as share 1 of a made-up split.
+						_, gc := dvSplitOf(t, gsk)
+						req, pk = e.dvReq(gsk, gc, 2), group
+					} else {
+						// Share 1 of a made-up split whose group key is the held share's key.
+						usk, uc := dvSplitUnder(t, ssk)
+						req = e.dvReq(usk, uc, 3)
+						pk, _ = core.PubkeyOf(usk)
+					}
+					e.wantNeverBoth(when, send(req), pk)
+				}
+			})
+		}
+	}
+}
+
+// The same two cases inside one batch: a share with its group key, and a
+// share with a share whose group key is the first one's key.
+func TestDVShareValidatorKeyNextToShareInOneBatch(t *testing.T) {
+	for _, what := range []string{"a share and its group key", "a share and a share under its key"} {
+		t.Run(what, func(t *testing.T) {
+			e := newDVEnv(t)
+			gsk, group := newKey(t)
+			ssk, comm := dvSplitUnder(t, gsk)
+			spk, _ := core.PubkeyOf(ssk)
+			if what == "a share and its group key" {
+				_, gc := dvSplitOf(t, gsk)
+				e.wantNeverBoth(what, e.sendBatch(e.dvReq(ssk, comm, 1), e.dvReq(gsk, gc, 2)), spk, group)
+				return
+			}
+			usk, uc := dvSplitUnder(t, ssk)
+			upk, _ := core.PubkeyOf(usk)
+			e.wantNeverBoth(what, e.sendBatch(e.dvReq(ssk, comm, 1), e.dvReq(usk, uc, 3)), spk, upk)
+		})
+	}
+}
+
+// A start with a share's record and its validator key's record stored
+// (an older runner took both) loads one of them and names the other.
+func TestDVShareValidatorKeyNextToShareAtStart(t *testing.T) {
+	e := newDVEnv(t)
+	gsk, group := newKey(t)
+	ssk, comm := dvSplitUnder(t, gsk)
+	spk, _ := core.PubkeyOf(ssk)
+	_, gc := dvSplitOf(t, gsk)
+	for _, r := range []shareRecord{
+		{Pubkey: spk, Secret: ssk[:], Index: 1, GroupPubkey: &comm[0]},
+		{Pubkey: group, Secret: gsk[:], Index: 2, GroupPubkey: &gc[0]},
+	} {
+		blob, err := e.srv.sealRecord(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := e.srv.putShare(r.Pubkey, blob); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.looseLoad = true
+	e.restart()
+	keys := e.srv.Signer.Keys()
+	if len(keys) != 1 || e.loadErr == nil || !strings.Contains(e.loadErr.Error(), neverBoth) {
+		t.Fatalf("start with a share and its validator key stored: %d keys loaded, %v", len(keys), e.loadErr)
 	}
 }
