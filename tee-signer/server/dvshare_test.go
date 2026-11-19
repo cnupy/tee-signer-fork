@@ -92,6 +92,33 @@ func TestDVShareImportAndSign(t *testing.T) {
 	}
 }
 
+// A dv_share runner signs an aggregate and a contribution with the share
+// when the selection proof is the group's, the proof a Charon cluster
+// combines from its partials. A proof the share key made alone is
+// refused: no aggregator duty is the share's own.
+func TestDVShareAggregateSelectionProof(t *testing.T) {
+	e := newDVEnv(t)
+	d := newDVShare(t)
+	if err := e.importDV(d); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	for _, c := range []struct {
+		name string
+		m    backend.Message
+		ok   bool
+	}{
+		{"aggregate, the group's proof", e.groupAggregate(d.groupSk, d.group), true},
+		{"aggregate, the share key's proof", e.groupAggregate(d.sk, d.pk), false},
+		{"contribution, the group's proof", e.groupContribution(d.groupSk, d.group), true},
+		{"contribution, the share key's proof", e.groupContribution(d.sk, d.pk), false},
+	} {
+		err := e.signMsg(d.pk, c.m)
+		if c.ok && err != nil || !c.ok && backend.StatusOf(err) != backend.StatusSelectionProof {
+			t.Errorf("%s: %v, want ok %v (else SELECTION_PROOF)", c.name, err, c.ok)
+		}
+	}
+}
+
 // A Charon client may register the group key with the builder: a dv_share
 // runner signs a registration that names the share key or the group key,
 // and refuses another key. A single-mode runner takes only its own key

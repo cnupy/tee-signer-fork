@@ -61,8 +61,9 @@ func TestSigningMode(t *testing.T) {
 
 // signing_mode = dv_share is byte 3. It adds a value and changes no byte or
 // hash of a threshold or single setup (TestSigningMode pins those). It
-// takes splits as threshold does (n >= 2, the chain's threshold rule), needs
-// no GCP acceptance, refuses one, and allows clusters of many signers.
+// takes splits as threshold does (n >= 2, the chain's threshold rule: 2 of
+// 3 on a non-prod chain, 2t - n >= 2 on a prod one), needs no GCP
+// acceptance, refuses one, and allows clusters of many signers.
 func TestSigningModeDVShare(t *testing.T) {
 	s := samples(t)["setup-gcp"]
 	s.SigningMode = SigningModeDVShare
@@ -80,9 +81,24 @@ func TestSigningModeDVShare(t *testing.T) {
 	for _, c := range []struct {
 		t, n int
 		ok   bool
-	}{{1, 1, false}, {3, 4, true}, {5, 7, true}, {2, 4, false}} {
+	}{{1, 1, false}, {3, 4, true}, {5, 7, true}, {2, 4, false}, {2, 3, true}} {
 		if err := CheckThresholdOn(s, c.t, c.n); (err == nil) != c.ok {
 			t.Errorf("dv_share %d of %d: %v", c.t, c.n, err)
+		}
+	}
+	if s.Chain.Prod() {
+		t.Fatal("the sample setup's chain is prod, want the non-prod ci-test chain")
+	}
+	// On mainnet two signing sets must overlap in two signers: 3 of 5
+	// overlaps in one, 4 of 5 in three.
+	prod := *s
+	prod.Chain = *chainWith(MainnetForkVersion)
+	for _, c := range []struct {
+		t, n int
+		ok   bool
+	}{{2, 3, false}, {3, 5, false}, {4, 5, true}, {3, 4, true}, {5, 7, true}, {1, 1, false}} {
+		if err := CheckThresholdOn(&prod, c.t, c.n); (err == nil) != c.ok {
+			t.Errorf("dv_share %d of %d on mainnet: %v", c.t, c.n, err)
 		}
 	}
 	if err := CheckMembers(SigningModeDVShare, 4); err != nil {

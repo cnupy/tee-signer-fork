@@ -43,10 +43,9 @@ func newDVShare(t *testing.T) *dvShare {
 	return d
 }
 
-// groupContribution is a ContributionAndProof (minimal preset, the dev
-// chain's) for validator index 9 whose selection proof the group key sk
-// made, as a Charon cluster combines it.
-func (e *tgtEnv) groupContribution(sk [32]byte, pk backend.Pubkey) *backend.ContributionAndProof {
+// proofBy is the selection proof sel that key sk, loaded alone for
+// validator index 9 in a signer of the dev chain, makes.
+func (e *tgtEnv) proofBy(sk [32]byte, pk backend.Pubkey, sel backend.Message) backend.Signature {
 	e.t.Helper()
 	m := software.NewMemHooks()
 	m.Clock = func() (uint64, error) { return e.now(), nil }
@@ -61,13 +60,53 @@ func (e *tgtEnv) groupContribution(sk [32]byte, pk backend.Pubkey) *backend.Cont
 	if _, err := g.AddValidator(pk, sk, 9, nil); err != nil {
 		e.t.Fatal(err)
 	}
-	slot := e.signer.EpochAt(e.now()) * cfg.SlotsPerEpoch
-	sel := &backend.SyncSelectionProof{Slot: slot, SubcommitteeIndex: 1}
 	d, _ := cfg.MessageDomain(sel)
 	proof, err := g.Sign(backend.SignRequest{Pubkey: pk, Message: sel, Domain: d})
 	if err != nil {
 		e.t.Fatal(err)
 	}
+	return proof
+}
+
+// groupAggregate is an AggregateAndProof (minimal preset: 4 committees
+// per slot, one byte of committee_bits) for validator index 9 at the
+// clock's epoch whose selection proof key sk made. The form is the one the
+// epoch hashes with: Gloas from its fork on, else Electra.
+func (e *tgtEnv) groupAggregate(sk [32]byte, pk backend.Pubkey) *backend.AggregateAndProof {
+	e.t.Helper()
+	cfg := e.signer.Config()
+	epoch := e.signer.EpochAt(e.now())
+	slot := epoch * cfg.SlotsPerEpoch
+	proof := e.proofBy(sk, pk, &backend.SelectionProof{Slot: slot})
+	form := backend.AggregateElectra
+	if g := cfg.GloasForkEpoch; g != nil && epoch >= *g {
+		form = backend.AggregateGloas
+	}
+	le := binary.LittleEndian
+	b := le.AppendUint64(nil, 9)
+	b = le.AppendUint32(b, 108) // offset of the Attestation
+	b = append(b, proof[:]...)
+	b = le.AppendUint32(b, 4+128+96+1) // offset of aggregation_bits in the Attestation
+	data, err := backend.EncodeSSZ(&backend.AttestationData{Slot: slot, BeaconBlockRoot: backend.Root{0xbb},
+		Source: backend.Checkpoint{Epoch: epoch - 1, Root: backend.Root{5}},
+		Target: backend.Checkpoint{Epoch: epoch, Root: backend.Root{7}}})
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	b = append(b, data...)
+	b = append(b, make([]byte, 96)...) // aggregate signature
+	b = append(b, 0x01)                // committee_bits
+	b = append(b, 0x03)                // aggregation_bits: one bit set, delimiter
+	return &backend.AggregateAndProof{Form: form, SSZ: b}
+}
+
+// groupContribution is a ContributionAndProof (minimal preset, the dev
+// chain's) for validator index 9 whose selection proof the group key sk
+// made, as a Charon cluster combines it.
+func (e *tgtEnv) groupContribution(sk [32]byte, pk backend.Pubkey) *backend.ContributionAndProof {
+	e.t.Helper()
+	slot := e.signer.EpochAt(e.now()) * e.signer.Config().SlotsPerEpoch
+	proof := e.proofBy(sk, pk, &backend.SyncSelectionProof{Slot: slot, SubcommitteeIndex: 1})
 	le := binary.LittleEndian
 	b := le.AppendUint64(nil, 9)
 	b = le.AppendUint64(b, slot)
