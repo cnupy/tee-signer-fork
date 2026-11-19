@@ -62,6 +62,18 @@ type Runner struct {
 	batch bool
 	// image, if set (SetImage), is the image check HEALTH reports.
 	image *cloud.ImageCheck
+	// conns are the open connections (DropConns).
+	conns map[net.Conn]struct{}
+}
+
+// DropConns closes every open connection, as a runner does with one that
+// stayed idle past its timeout. New connections are served as before.
+func (r *Runner) DropConns() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for c := range r.conns {
+		c.Close()
+	}
 }
 
 // SetImage makes HEALTH report ic as the runner's image check, as a cloud
@@ -105,7 +117,7 @@ func Start(t testing.TB, state cloud.SetupState) *Runner {
 // start starts a runner of the build of chain f.
 func start(t testing.TB, state cloud.SetupState, f runnerchain.Chain) *Runner {
 	t.Helper()
-	r := &Runner{state: state, frames: map[wire.MsgType]int{}, chain: f}
+	r := &Runner{state: state, frames: map[wire.MsgType]int{}, chain: f, conns: map[net.Conn]struct{}{}}
 	certName := f.CertName()
 	var err error
 	if r.caKey, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader); err != nil {
@@ -224,7 +236,15 @@ func (r *Runner) ClientFiles(t testing.TB, dir string) (cert, key string) {
 }
 
 func (r *Runner) serve(c net.Conn) {
-	defer c.Close()
+	r.mu.Lock()
+	r.conns[c] = struct{}{}
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		delete(r.conns, c)
+		r.mu.Unlock()
+		c.Close()
+	}()
 	for {
 		f, err := wire.ReadFrame(c)
 		if err != nil {

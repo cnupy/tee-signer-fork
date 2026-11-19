@@ -19,14 +19,19 @@
 #   link    a dvt runner linked against a default core: the link fails on
 #           sc_signer_add_validator_group; a default runner linked against
 #           a DVT core: the link fails on sc_core_dvt_marker, defined twice
+#   admin   signer-admin of each variant (scripts/build-admin.sh): the
+#           default one has none of the dv_share exit commands (dv-indices,
+#           dv-exit, dv-exit-post) and refuses them as unknown, the dvt one
+#           has all of them
 #   go      go vet and the Go tests of the dvt-tagged packages with the tag
 #           dvt: signer-core/core, tee-signer and tee-signer/server (with
 #           the tags of runner-dev-dvt), under the race detector (RACE=
-#           turns it off); then the signer-admin tests that drive a dvt dev
-#           runner (SIGNER_ADMIN_DVT_RUNNER)
+#           turns it off); then signer-admin's vet with the tag dvt and its
+#           dvt tests: the exit route and those that drive a dvt dev runner
+#           (SIGNER_ADMIN_DVT_RUNNER)
 #   ctest   the C suites of the DVT core build (signer-core/scripts/test.sh
 #           with DVT=1, no fuzzing: the nightly run fuzzes)
-# runner, link and go need the libraries of core; ctest needs the vectors
+# runner, link, admin and go need the libraries of core; ctest needs the vectors
 # (signer-core/scripts/fetch.sh). Without a section: names core runner link.
 # make test-dvt runs every section; CI's dvt job runs that.
 set -euo pipefail
@@ -162,11 +167,37 @@ t_go() {
   fi
   # shellcheck disable=SC2086
   if runner "$TMP/runner-dev-dvt-admin" "$tags" &&
-    (cd "$ROOT/signer-admin" && SIGNER_ADMIN_DVT_RUNNER="$TMP/runner-dev-dvt-admin" \
-      go test $race -count=1 -v -run '^TestDVShareDevRunner' ./cmd/signer-admin | grep -E '^(--- |ok|FAIL)'); then
-    ok "go: signer-admin tests against a dvt dev runner"
+    (cd "$ROOT/signer-admin" && go vet -tags dvt ./... && SIGNER_ADMIN_DVT_RUNNER="$TMP/runner-dev-dvt-admin" \
+      go test $race -count=1 -v -tags dvt -run '^(TestDVShareDevRunner|TestDVExit|TestDVTBuild|TestENRKey)' ./cmd/signer-admin |
+      grep -E '^(--- |ok|FAIL)'); then
+    ok "go: signer-admin vet and dvt tests, with a dvt dev runner"
   else
-    bad "go: signer-admin tests against a dvt dev runner"
+    bad "go: signer-admin vet and dvt tests, with a dvt dev runner"
+  fi
+}
+
+# DV_EXIT_CMDS are the commands only a dvt signer-admin has.
+DV_EXIT_CMDS=(dv-indices dv-exit dv-exit-post)
+
+t_admin() {
+  local bin out rc c
+  DVT=0 bash "$ROOT/scripts/build-admin.sh" || { bad "admin: the default signer-admin does not build"; return; }
+  DVT=1 bash "$ROOT/scripts/build-admin.sh" || { bad "admin: the dvt signer-admin does not build"; return; }
+  for bin in signer-admin signer-admin-dvt; do
+    for c in "${DV_EXIT_CMDS[@]}"; do
+      rc=0
+      out="$("$BUILD/$HOST_ARCH/bin/$bin" "$c" 2>&1)" || rc=$?
+      case "$bin:$rc:$out" in
+        signer-admin:1:*"unknown subcommand \"$c\""*) ok "admin: the default signer-admin refuses $c as unknown" ;;
+        signer-admin-dvt:1:*"usage: signer-admin $c "*) ok "admin: the dvt signer-admin has $c" ;;
+        *) bad "admin: $bin $c (exit $rc): $(head -n 2 <<<"$out")" ;;
+      esac
+    done
+  done
+  if grep -qaF dv-exit-post "$BUILD/$HOST_ARCH/bin/signer-admin"; then
+    bad "admin: the default signer-admin holds the string dv-exit-post"
+  else
+    ok "admin: the default signer-admin holds no dv-exit-post"
   fi
 }
 
@@ -183,6 +214,7 @@ for s in "${sections[@]}"; do
     core) t_core ;;
     runner) t_runner ;;
     link) t_link ;;
+    admin) t_admin ;;
     go) t_go ;;
     ctest) t_ctest ;;
     *) echo "dvt-test: unknown section $s" >&2; exit 2 ;;

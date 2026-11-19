@@ -15,6 +15,8 @@ signer-admin exit -cluster cluster.json -split split.json -pubkey 0x... -index 1
 curl -X POST -H 'Content-Type: application/json' --data @exit.json http://BEACON:5052/eth/v1/beacon/pool/voluntary_exits
 ```
 
+`-pubkey` is the validator key. For a dv_share cluster that is the group key (`distributed_public_key`): each dv_share signer lists its share under the share's own key and signs with it, and `exit` refuses a share key with a message that names its share index and group key. For the Obol exit flow see [Exits of dv_share keys](#exits-of-dv_share-keys).
+
 Every setup file says `signing_mode`: `threshold` (the signers hold shares of t-of-n splits, n >= 2), `single` (one signer holds whole keys) or `dv_share` (each signer holds one share of each validator of a Charon cluster, [below](#charon-shares-signing_mode--dv_share)). One key is held by one runner: `signer-admin setup` refuses `single` with more than one signer and `threshold` with one, every tool that reads `cluster.json` refuses a single-mode cluster of more than one signer, and `import-draft` refuses a split file that gives one share index to two signers, or a split that does not fit the target's mode, as its runner does. `signer-admin setup` refuses a single-mode file whose signer is on GCP: that signer would hold keys alone (1 of 1), which is unsafe there (Cloud KMS has no lock on the key release rule). `-allow-gcp-unsafe-single-key` accepts the risk in the setup of such a one-signer GCP file and prints a WARNING line (a threshold file, or a signer that is not on GCP, refuses the flag); so does the key `sealing_key_release.unsafe_single_key_accepted = true` in the signer's section, which `setup-tool encode` warns about too. On mainnet the setup also needs `sealing_key_release.no_lock_accepted = true`, or it is refused: without it the runner would not start. `signer-admin import-draft` refuses a `not_after` more than 7 days from now: a runner takes shares under an order until its `not_after`, so keep it short. It drafts a 1 of 1 order to a GCP signer only with `-allow-gcp-unsafe-single-key`, and `show` prints the warning to each approver. Why, and what it means: [platform-gcp/deploy/README.md](../platform-gcp/deploy/README.md#setup), "Setup".
 
 Module path `github.com/lidofinance/tee-signer/signer-admin`, with its own `go.mod`. It uses other modules of this repo only through their public packages (`scripts/check-imports.sh`).
@@ -128,3 +130,58 @@ A signer that holds Charon shares as whole keys under `signing_mode = single` si
 5. `signer-admin import -cluster cluster.json -signer NAME -order import.signed -commitments split.json -shares FILE [-interchange FILE]`, with the shares file of the single-mode import.
 
 Each key starts with the restart floor of the import, so the signer misses the duties of a restart.
+
+### Exits of dv_share keys
+
+A distributed validator exits with t partial exits, each signed with one operator's share. In an Obol cluster the Obol API stores the partials, and each operator's `charon exit fetch` combines t of them into the full exits that its validator ejector reads. Operators with keystores keep using `lido-dv-exit` or `charon exit sign`. An operator whose share sits in a dv_share signer signs its partials with its admin certificate and posts them from its Charon host. Both kinds of operators can be in one cluster: all partials meet in the Obol API.
+
+The commands below come with the build tag `dvt`. `make admin DVT=1` builds `build/<arch>/bin/signer-admin-dvt` (after `make core DVT=1`); `make admin` builds the default `signer-admin`, which does not have them.
+
+A partial exit needs the validator index, so the steps repeat for each deposit batch, once the deposits are on chain:
+
+1. On a machine with a beacon node, no certificate needed:
+
+   ```
+   signer-admin dv-indices -lock cluster-lock.json -beacon URL -out indices.json
+   ```
+
+   It checks that the node is synced and on the lock's chain (`fork_version`), and writes the index of each validator of the lock that the node knows, in the form of the beacon API's `GET /eth/v1/beacon/states/head/validators` answer. A saved answer of that endpoint works as the file too.
+
+2. On the admin machine, with the signer's admin connection file:
+
+   ```
+   signer-admin dv-exit -cluster cluster.json -signer NAME -split split.json -lock cluster-lock.json -indices indices.json -pubkeys batch.txt [-epoch E] -out NAME-exits.json
+   ```
+
+   - `-split` is the file of `dv-split`; it gives NAME's share index. The lock must be the one the split came from.
+   - `-pubkeys` names the batch, one group key per line; `-all` instead takes every validator of the lock. Without one of them `dv-exit` refuses. Every validator of the batch needs an index, or nothing is signed. A share key in the list is refused with its share index and group key.
+   - After every check, before the first signature, `dv-exit` prints the batch: the count, the signer and its share index, the epoch, the lock hash, the chain and each validator's index and key. It signs only when you type `yes`, on a new connection, so a long wait at the question does not run into the signer's idle timeout. `-yes` skips the question for scripts; without `-yes`, a stdin that is not a terminal is refused. `-check` runs every check, prints the batch and stops: nothing is signed or written, and `-out` is not needed. A partial exit stays valid at every later epoch and the Obol API keeps what it gets, so check the batch before you answer.
+   - `-epoch` defaults to 194048 on mainnet and 256 on Hoodi, the epochs Obol's Lido node setup gives `lido-dv-exit`. Every operator of the cluster must use the same epoch: the Obol API keeps the first epoch it gets for a validator. The signer signs in its chain's `voluntary_exit_fork_version` domain, the Capella one (EIP-7044), which is the domain Charon and the Obol API use at any epoch.
+   - The setup of NAME must say `signing_mode = dv_share`, and the signer must list each share under the share's own key. `dv-exit` checks every share before it signs anything, then checks each partial under its share key. A partial the signer refuses is reported; the others are written and the command exits non-zero.
+   - `-beacon URL` instead of `-indices` asks a node of the signer's chain.
+   - The output holds the Obol API's `partial_exits` and `share_idx`, with the lock hash and the domain's values. It is not secret.
+
+3. Copy the file to the Charon host and post it there:
+
+   ```
+   signer-admin dv-exit-post -lock .charon/cluster-lock.json -enr-key .charon/charon-enr-private-key NAME-exits.json
+   ```
+
+   Before it sends anything it checks: the file's `lock_hash` is the lock's; each public key is a validator of the lock; each partial verifies under the lock's public share at `share_idx` in the chain's exit domain; the ENR key belongs to operator `share_idx` of the lock. It then signs the request with the ENR key, as `charon exit sign` does, and sends `POST /exp/partial_exits/{lock_hash}` to `-api` (default `https://api.obol.tech/v1`, the address Charon uses).
+
+   - The exit domain: on mainnet and Hoodi the tool knows it from the lock's `fork_version`. For another chain it refuses unless `-domain` (its voluntary exit domain), or `-fork-version` (the chain's Capella fork version) with `-genesis-root` (its genesis validators root), names it, and the files must agree with what you give.
+   - The key file must have mode 0600 and belong to the user who runs the tool; the tool reads it on that host only and never prints it. Run the tool as the user that owns the key, the one Charon runs as (for example `sudo -u USER signer-admin dv-exit-post ...`), not as root, and do not chown the key: Charon must still read it.
+   - `-api` takes https, or http to a host whose every address is a loopback one. The tool resolves the name again when it connects and connects only to such an address. It follows no redirect. An error answer of the API is cut to 200 characters, without control characters, before it is printed.
+   - The tool does not recompute the lock's `lock_hash`: Charon's hash covers the whole lock in a layout that changes with the lock's version. The Obol API checks each partial against the public shares of the cluster with that hash.
+
+   Before it signs the request it prints the batch: the count, `share_idx`, the lock hash, the URL, the chain and each validator's index, epoch and key. It posts only when you type `yes`; `-yes` and `-check` work as for `dv-exit`.
+
+4. Once t operators have posted, each operator fetches the full exits on its Charon host into the folder its validator ejector reads (`./validator-ejector` in Obol's Lido node setup):
+
+   ```
+   charon exit fetch --all --fetched-exit-path ./validator-ejector --lock-file .charon/cluster-lock.json --private-key-file .charon/charon-enr-private-key --beacon-node-endpoints URL
+   ```
+
+   `charon exit fetch` writes `exit-<pubkey>.json`, the beacon API body the ejector reads, with mode 0600; make the files readable by the user the ejector runs as.
+
+Security: after step 4 every operator's ejector folder holds the full exit of every validator of the cluster, as in the stock Obol and Lido flow. Whoever can read one operator's folder can exit all of those validators, so the stored exits are 1 of n whatever t is. The signer keeps the share and the partial signing behind the admin certificate, but does not change this part. The advice above to keep only a few pre-signed exits does not fit this flow.

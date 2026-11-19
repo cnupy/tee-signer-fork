@@ -44,10 +44,20 @@ func newFakeClusterAs(t *testing.T, f runnerchain.Chain, timeLock int) *fakeClus
 // to the setup's locked group.
 func newFakeClusterWith(t *testing.T, f runnerchain.Chain, timeLock int, lockedExtra string) *fakeCluster {
 	t.Helper()
+	return newFakeClusterEdit(t, f, timeLock, lockedExtra, nil)
+}
+
+// newFakeClusterEdit is newFakeClusterWith with the setup file's text
+// changed by edit, if not nil.
+func newFakeClusterEdit(t *testing.T, f runnerchain.Chain, timeLock int, lockedExtra string, edit func(string) string) *fakeCluster {
+	t.Helper()
 	dir := t.TempDir()
 	fc := &fakeCluster{dir: dir, keys: approvers(t, dir, 4), runners: map[string]*fakerunner.Runner{}}
-	conf := writeFile(t, filepath.Join(dir, "setup.conf"),
-		setupText(dir, caDER(t), genesisTime(), lockedText(fc.keys[:3], 2, timeLock, fee1)+lockedExtra, names...))
+	text := setupText(dir, caDER(t), genesisTime(), lockedText(fc.keys[:3], 2, timeLock, fee1)+lockedExtra, names...)
+	if edit != nil {
+		text = edit(text)
+	}
+	conf := writeFile(t, filepath.Join(dir, "setup.conf"), text)
 	out := mustTool(t, "setup", "-out", filepath.Join(dir, "setups"), conf)
 	fc.hashes = setupHashes(out)
 	if len(fc.hashes) != 3 || count(out, `^cluster_id 0x[0-9a-f]{64}$`) != 1 {

@@ -102,6 +102,10 @@
 //	    even when fewer than t. If a selected signer fails, it still
 //	    writes the file but exits non-zero. Each admin certificate holder
 //	    runs it with their own certificate. The file is not secret.
+//	    -pubkey is the validator key: for a dv_share cluster the group
+//	    key. A dv_share signer lists its share under the share's own key
+//	    (the split's value at its index) and signs with that key; a share
+//	    key in -pubkey is refused with the share index and group key.
 //	signer-admin exit-combine -split FILE [-pubkey 0x...] [-index N] [-epoch E] -out exit.json PARTIALS...
 //	    Offline: read the files of exit -partial-out, check that they name
 //	    the same exit and chain (and -pubkey, -index, -epoch if given),
@@ -124,6 +128,9 @@
 //	    share and the group key against them, and write the split file of
 //	    import-draft and import (dvsplit.go). import then takes a shares
 //	    file that names each share by its own key, as for single mode.
+//	signer-admin dv-indices, dv-exit, dv-exit-post
+//	    With the build tag dvt only: the exit route of dv_share signers
+//	    through the Obol API (dvexit.go, dvpost.go).
 //	signer-admin issue-client-cert -ca-cert FILE -ca-key FILE -role admin|attest|signing -name CN -out DIR
 //	signer-admin issue-client-cert -ca-cert FILE -ca-key FILE -make-intermediate ROLE -name CN -out DIR
 //	    Issue one client certificate of a role, or a role intermediate from
@@ -211,9 +218,17 @@ const usage = `usage:
   signer-admin dv-split -lock cluster-lock.json -signers NAME=INDEX[,NAME=INDEX...] [-out split.json]
   signer-admin issue-client-cert -ca-cert FILE -ca-key FILE -role admin|attest|signing|-make-intermediate ROLE -name CN -out DIR`
 
+// dvtCommands and dvtUsage are the commands of a build with the tag dvt
+// (dvexit.go): the exit route of dv_share signers. A default build has
+// none.
+var (
+	dvtCommands map[string]func([]string, io.Writer) error
+	dvtUsage    string
+)
+
 func run(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New(usage)
+		return errors.New(usage + dvtUsage)
 	}
 	cmds := map[string]func([]string, io.Writer) error{
 		"setup": cmdSetup, "pin": cmdPin, "status": cmdStatus, "draft": cmdDraft,
@@ -222,9 +237,12 @@ func run(args []string, out io.Writer) error {
 		"dv-split":          cmdDVSplit,
 		"issue-client-cert": cmdIssueClientCert, "approver-key": cmdApproverKey,
 	}
+	for name, cmd := range dvtCommands {
+		cmds[name] = cmd
+	}
 	cmd, ok := cmds[args[0]]
 	if !ok {
-		return fmt.Errorf("unknown subcommand %q\n%s", args[0], usage)
+		return fmt.Errorf("unknown subcommand %q\n%s", args[0], usage+dvtUsage)
 	}
 	return cmd(args[1:], out)
 }

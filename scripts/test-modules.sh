@@ -13,7 +13,8 @@
 # platform packages need; tee-signer also with each tag alone (package main),
 # with the tags of each non-prod chain and with the tags of a release runner.
 # The signer-admin tests start a dev runner: SIGNER_ADMIN_RUNNER, else one
-# built here (dev_runner).
+# built here (dev_runner). With DVT=1 signer-admin also tests with the tag
+# dvt, with a dvt dev runner.
 # Logs: logs/test-<module>.log (tooling/<name>: logs/test-tooling-<name>.log).
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/common.sh"
@@ -38,19 +39,21 @@ vet_builds() {
   go vet -tags "$ALL_TAGS" ./... && go vet -tags "$ALL_TAGS,debugimport" ./...
 }
 
-# dev_runner: prints the dev runner the signer-admin tests start. That is
-# SIGNER_ADMIN_RUNNER when set (scripts/test.sh sets it to the runner-dev
-# of scripts/build-runner.sh), else a runner-dev built here for this
+# dev_runner [NAME]: prints the dev runner the signer-admin tests start.
+# For runner-dev (the default) that is SIGNER_ADMIN_RUNNER when set
+# (scripts/test.sh sets it to the runner-dev of scripts/build-runner.sh);
+# otherwise NAME (runner-dev or runner-dev-dvt) built here for this
 # machine, as build-runner.sh builds it but not static.
 dev_runner() {
-  if [ -n "${SIGNER_ADMIN_RUNNER:-}" ]; then
+  local name="${1:-runner-dev}"
+  if [ "$name" = runner-dev ] && [ -n "${SIGNER_ADMIN_RUNNER:-}" ]; then
     echo "$SIGNER_ADMIN_RUNNER"
     return
   fi
-  local bin="$BUILD/$HOST_ARCH/test-bin/runner-dev"
+  local bin="$BUILD/$HOST_ARCH/test-bin/$name"
   mkdir -p "$(dirname "$bin")" || return 1
   (cd "$ROOT/tee-signer" && CGO_ENABLED=1 CC="$(cc_for "$HOST_ARCH")" \
-    go build -trimpath -buildvcs=false -tags "$(runner_tags runner-dev)" -o "$bin" .) >&2 || return 1
+    go build -trimpath -buildvcs=false -tags "$(runner_tags "$name")" -o "$bin" .) >&2 || return 1
   echo "$bin"
 }
 
@@ -94,9 +97,17 @@ checks() {
     signer-admin)
       # The operator tools build without the runner tags. Some tests drive
       # a real dev runner (SIGNER_ADMIN_RUNNER).
-      local runner
+      # With DVT=1 they run again with the tag dvt (the exit commands of
+      # dv_share keys), and those that need one get a dvt dev runner
+      # (SIGNER_ADMIN_DVT_RUNNER).
+      local runner dvt_runner
       runner="$(dev_runner)" || return 1
-      SIGNER_ADMIN_RUNNER="$runner" go test $RACE -count=1 -v -tags "$ALL_TAGS" ./... || return 1 ;;
+      SIGNER_ADMIN_RUNNER="$runner" go test $RACE -count=1 -v -tags "$ALL_TAGS" ./... || return 1
+      if [ "$DVT" = 1 ]; then
+        dvt_runner="$(dev_runner runner-dev-dvt)" || return 1
+        go vet -tags dvt ./... || return 1
+        SIGNER_ADMIN_RUNNER="$runner" SIGNER_ADMIN_DVT_RUNNER="$dvt_runner" go test $RACE -count=1 -v -tags "$ALL_TAGS,dvt" ./... || return 1
+      fi ;;
     attestation-verify)
       # The clients against the debug runners, when they are built.
       # Pass a debug runner only when it was built, so the tests skip instead of failing.

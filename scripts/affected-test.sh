@@ -178,7 +178,8 @@ for f in signer-core/src/signer.c signer-core/core/dvt.go signer-core/Makefile t
   tee-signer/server/config.go tee-signer/start.go tee-signer/setupstate.go signer-protocol/backend.go \
   signer-protocol/wire/health.go governance/importorder/order.go governance/setupwire/threshold.go \
   governance/setupwire/setupwire.go governance/setupwire/update.go gateway/internal/backend/signers.go \
-  signer-admin/cmd/signer-admin/dvsplit.go scripts/build-core.sh scripts/dvt-test.sh scripts/build-runner.sh \
+  signer-admin/cmd/signer-admin/dvsplit.go signer-admin/cmd/signer-admin/dvpost.go signer-admin/cmd/signer-admin/exit.go \
+  scripts/build-admin.sh scripts/build-core.sh scripts/dvt-test.sh scripts/build-runner.sh \
   scripts/build-runner-nts.sh scripts/generic-images.sh scripts/ci-scope.sh release/release-build.sh \
   release/measurements.py Makefile .github/workflows/ci.yml; do
   i=$((i + 1))

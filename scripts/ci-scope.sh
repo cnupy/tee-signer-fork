@@ -29,14 +29,15 @@
 #                 signer-core/, tee-signer/ (the dv_share files and their
 #                 callers: server.go, importorder.go, config.go, start.go;
 #                 the job vets the whole module with the tag dvt),
-#                 signer-protocol/, signer-admin dv-split
-#                 (cmd/signer-admin dv*, commitments*), governance/importorder/,
-#                 governance/setupwire/, gateway/, release/, the build
-#                 scripts of the variants (build-core.sh, build-runner.sh,
-#                 build-runner-nts.sh, generic-images.sh, common.sh,
-#                 dvt-test.sh), ci-scope.sh, the Makefile or ci.yml; *.md
-#                 does not count. 1 also when CI_ALL=1 and when the diff
-#                 cannot be made.
+#                 signer-protocol/, signer-admin dv-split and the dv exit
+#                 commands (cmd/signer-admin dv*, commitments*, exit.go,
+#                 main.go, go.mod, scripts/build-admin.sh),
+#                 governance/importorder/, governance/setupwire/, gateway/,
+#                 release/, the build scripts of the variants
+#                 (build-core.sh, build-runner.sh, build-runner-nts.sh,
+#                 generic-images.sh, common.sh, dvt-test.sh), ci-scope.sh,
+#                 the Makefile or ci.yml; *.md does not count. 1 also when
+#                 CI_ALL=1 and when the diff cannot be made.
 # ALL when CI_ALL=1 or FUZZ_ALL=1, on any event but pull_request
 # (GITHUB_EVENT_NAME), and when affected.sh prints ALL. The reason goes to
 # stderr.
@@ -79,7 +80,9 @@ dvt_changed() {
     case "$f" in
       *.md) ;;
       signer-core/* | tee-signer/* | signer-protocol/* | governance/importorder/* | governance/setupwire/* | \
-        signer-admin/cmd/signer-admin/dv* | signer-admin/cmd/signer-admin/commitments* | gateway/* | release/* | \
+        signer-admin/cmd/signer-admin/dv* | signer-admin/cmd/signer-admin/commitments* | \
+        signer-admin/cmd/signer-admin/exit.go | signer-admin/cmd/signer-admin/main.go | signer-admin/go.mod | \
+        scripts/build-admin.sh | gateway/* | release/* | \
         scripts/build-core.sh | scripts/build-runner.sh | scripts/build-runner-nts.sh | scripts/generic-images.sh | \
         scripts/common.sh | scripts/dvt-test.sh | scripts/ci-scope.sh | Makefile | .github/workflows/ci.yml) return 0 ;;
     esac

@@ -90,11 +90,18 @@ func cmdExit(args []string, out io.Writer) error {
 	}
 	// t and the share index of each signer. A single-mode signer holds the
 	// whole key: its signature is the exit.
+	// comm: the validator's commitments in the split, which give each
+	// signer's share key.
 	t, ids := 1, map[string]uint64{}
+	var comm []cloud.Pubkey
 	if *splitPath != "" {
 		split, err := readSplit(*splitPath)
 		if err != nil {
 			return err
+		}
+		var ok bool
+		if comm, ok = split.commitmentsOf(pk); !ok {
+			return notValidator(split, *splitPath, pk)
 		}
 		t = int(split.T)
 		for name, i := range split.Shares {
@@ -126,7 +133,15 @@ func cmdExit(args []string, out io.Writer) error {
 			failed = true
 			continue
 		}
-		sig, err := exitPartial(m, req, root, *cf.timeout)
+		var share *cloud.Pubkey
+		if comm != nil {
+			s, err := threshold.FeldmanEval(comm, id)
+			if err != nil {
+				return fmt.Errorf("commitments of %s: %w", pk, err)
+			}
+			share = &s
+		}
+		sig, err := exitPartial(m, req, share, root, *cf.timeout)
 		if err != nil {
 			fprintf(out, "%s: %v\n", m.name, err)
 			failed = true
@@ -320,9 +335,26 @@ func combineAndWrite(p exitPartials, root cloud.Root, path string) error {
 	return writeAtomic(path, append(raw, '\n'), 0o644)
 }
 
+// notValidator is the refusal of a -pubkey that is no validator of the
+// split. When the key is a share key of one of its validators, as a
+// dv_share signer lists its share, it names the share index and the
+// validator's group key.
+func notValidator(split *splitFile, path string, pk cloud.Pubkey) error {
+	for _, v := range split.Validators {
+		for i := uint64(1); i <= uint64(split.N); i++ {
+			if s, err := threshold.FeldmanEval(v.Commitments, i); err == nil && s == pk {
+				return fmt.Errorf("-pubkey %s is share %d of validator %s in %s: name the validator by its group key", pk, i, v.Pubkey, path)
+			}
+		}
+	}
+	return fmt.Errorf("-pubkey %s is no validator of %s", pk, path)
+}
+
 // exitPartial asks m for its signature of the exit and checks it against
-// m's share key of the validator.
-func exitPartial(m *member, req cloud.SignRequest, root cloud.Root, timeout time.Duration) (cloud.Signature, error) {
+// m's share key of the validator. share, if not nil, is m's share key in
+// the split: a dv_share signer lists its share under that key, not under
+// the validator key, and signs the exit with it.
+func exitPartial(m *member, req cloud.SignRequest, share *cloud.Pubkey, root cloud.Root, timeout time.Duration) (cloud.Signature, error) {
 	cl, err := connectAdmin(m, timeout)
 	if err != nil {
 		return cloud.Signature{}, err
@@ -334,20 +366,26 @@ func exitPartial(m *member, req cloud.SignRequest, root cloud.Root, timeout time
 	if err != nil {
 		return cloud.Signature{}, fmt.Errorf("public keys: %w", err)
 	}
-	var share *cloud.Pubkey
+	var key *cloud.Pubkey // the key the partial verifies under
 	for _, k := range keys {
-		if k.Pubkey == req.Pubkey {
-			share = &k.SharePubkey
+		switch {
+		case k.Pubkey == req.Pubkey:
+			key = &k.SharePubkey
+		case share != nil && k.Pubkey == *share && k.SharePubkey == *share:
+			key, req.Pubkey = share, *share
 		}
 	}
-	if share == nil {
+	if key == nil {
+		if share != nil {
+			return cloud.Signature{}, fmt.Errorf("holds neither the validator nor its share key %s", share)
+		}
 		return cloud.Signature{}, errors.New("does not hold the validator")
 	}
 	sig, err := cl.Sign(ctx, req)
 	if err != nil {
 		return cloud.Signature{}, err
 	}
-	if !core.Verify(*share, root, sig) {
+	if !core.Verify(*key, root, sig) {
 		return cloud.Signature{}, errors.New("partial signature does not verify under its share key")
 	}
 	return sig, nil

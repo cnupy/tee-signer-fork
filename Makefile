@@ -21,7 +21,7 @@ MODEL_RUNS ?= 500
 FUZZ_EVERYTHING := bash -c '. "$$1"; fuzz_everything' _ $(ROOT)/scripts/common.sh
 
 .DEFAULT_GOAL := help
-.PHONY: help deps check core nts build test test-modules test-dvt e2e e2e-nonprod test-core test-rust fuzz fuzz-core model race release-gate loc clean
+.PHONY: help deps check core nts build admin test test-modules test-dvt e2e e2e-nonprod test-core test-rust fuzz fuzz-core model race release-gate loc clean
 
 help: ## list targets
 	@grep -E '^[a-z][a-z0-9-]+:.*## ' $(firstword $(MAKEFILE_LIST)) | \
@@ -54,13 +54,16 @@ nts: ## the Rust NTS library (trusted-time/rust) for both arches: crates fetched
 build: ## static runners (one per cloud), host tools; runs the release gate and the dependency check on each
 	bash $(ROOT)/scripts/build-runner.sh
 
+admin: core ## signer-admin for this machine (build/<arch>/bin); DVT=1: signer-admin-dvt, with the dv_share exit commands (tag dvt)
+	bash $(ROOT)/scripts/build-admin.sh
+
 test-modules: core nts ## gofmt, vet and unit tests of every Go module (or those of CI_MODULES), each on its own go.mod
 	bash $(ROOT)/scripts/test-modules.sh
 
 race: test-modules ## same as test-modules (the race detector is on unless RACE=)
 
-test-dvt: ## the dvt variant (CI job dvt): both cores, the build and link checks, the dvt-tagged Go tests, the DVT core's C suites
-	bash $(ROOT)/scripts/dvt-test.sh names core runner link go ctest
+test-dvt: ## the dvt variant (CI job dvt): both cores, the build and link checks, both signer-admin builds, the dvt-tagged Go tests, the DVT core's C suites
+	bash $(ROOT)/scripts/dvt-test.sh names core runner link admin go ctest
 
 # The runners make build puts in build/<arch>/bin, named as scripts/test.sh
 # names them (bin_env), so tests/e2e checks those and not its own builds.

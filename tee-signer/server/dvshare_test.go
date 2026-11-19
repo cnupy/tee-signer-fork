@@ -334,3 +334,46 @@ func TestDVShareRefusesAWholeKey(t *testing.T) {
 		t.Fatalf("stored %v, %v", stored, err)
 	}
 }
+
+// A dv_share runner signs a voluntary exit with its share, for the
+// validator index the import gave the share, and the partial verifies
+// under the share key (signer-admin dv-exit asks for it through the admin
+// role). Another index is refused, and the group key is no key of the
+// runner.
+func TestDVShareExit(t *testing.T) {
+	e := newDVEnv(t)
+	d := newDVShare(t)
+	if err := e.importDV(d); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	cfg := e.signer.Config()
+	exit := func(pk backend.Pubkey, index uint64) (backend.Signature, backend.Root, error) {
+		m := &backend.VoluntaryExit{Epoch: 1, ValidatorIndex: index}
+		dom, err := cfg.MessageDomain(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		obj, _ := backend.HashTreeRoot(m)
+		p, err := wire.EncodeSign(backend.SignRequest{Pubkey: pk, Message: m, Domain: dom})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := e.srv.dispatch(ctx, wire.Frame{Type: wire.TypeSign, Payload: p})
+		var sig backend.Signature
+		copy(sig[:], out)
+		return sig, backend.SigningRoot(obj, dom), err
+	}
+	sig, root, err := exit(d.pk, 9)
+	if err != nil {
+		t.Fatalf("exit of the share: %v", err)
+	}
+	if !core.Verify(d.pk, root, sig) {
+		t.Fatal("the partial exit does not verify under the share key")
+	}
+	if _, _, err := exit(d.pk, 8); err == nil {
+		t.Fatal("exit for another validator index signed")
+	}
+	if _, _, err := exit(d.group, 9); backend.StatusOf(err) != backend.StatusUnknownValidator {
+		t.Fatalf("exit under the group key: %v, want UNKNOWN_VALIDATOR", err)
+	}
+}

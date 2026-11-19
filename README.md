@@ -81,6 +81,7 @@ holds those keys. HEALTH's `variant` says which one runs.
 ```sh
 make core DVT=1    # the DVT core, build/<arch>/lib/libsigner_core_dvt.a
 make build DVT=1   # the dvt runners: runner-aws-dvt, runner-azure-dvt, ...
+make admin DVT=1   # signer-admin-dvt, with the exit commands of dv_share keys
 make test-dvt      # both cores, the link checks, the dvt Go tests, the DVT C suites
 ```
 

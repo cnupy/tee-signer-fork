@@ -12,6 +12,9 @@ require (
 )
 
 require (
+	// secp256k1 stays at v4.0.1 (2021), the release already in the module cache
+	// and go.sum, until a newer release is chosen and downloaded on purpose.
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1
 	github.com/lidofinance/tee-signer/attestation-verify v0.0.0
 	github.com/lidofinance/tee-signer/devkit v0.0.0
 	github.com/lidofinance/tee-signer/governance v0.0.0
