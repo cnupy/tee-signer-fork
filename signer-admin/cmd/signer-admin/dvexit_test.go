@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -439,5 +440,19 @@ func TestDVTBuildHasDVExitCommands(t *testing.T) {
 	for _, c := range []string{"dv-indices", "dv-exit", "dv-exit-post"} {
 		wantIn(t, all, "signer-admin "+c+" ")
 		wantIn(t, failTool(t, c), "usage: signer-admin "+c+" ")
+	}
+}
+
+// dv-indices and dv-exit -beacon take only a 200 as the node's answer: a
+// 404 ("state not found") must not read as "no key is a validator".
+func TestDVExitBeaconIndicesNot200(t *testing.T) {
+	c := newCharonCluster(t, 2, 3, 4)
+	for _, code := range []int{http.StatusNotFound, http.StatusServiceUnavailable} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(code) }))
+		f, err := beaconIndices(context.Background(), srv.URL, c.groups)
+		srv.Close()
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprint(code)) {
+			t.Fatalf("HTTP %d: indices %v, err %v", code, f, err)
+		}
 	}
 }

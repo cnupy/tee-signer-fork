@@ -169,11 +169,10 @@ func beaconValidators(ctx context.Context, base string, keys []cloud.Pubkey) (ma
 		if err != nil {
 			return nil, err
 		}
-		if resp.StatusCode == http.StatusNotFound {
-			continue // none of these keys is a validator
-		}
+		// Only a 200 answers: it leaves out the keys the node does not know.
+		// A 404 here is "state not found", not "no such validator".
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("beacon node: %s", resp.Status)
+			return nil, fmt.Errorf("beacon node: the validators endpoint answered %s, not 200 OK", resp.Status)
 		}
 		var r struct {
 			Data []struct {

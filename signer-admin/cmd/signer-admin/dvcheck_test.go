@@ -360,3 +360,19 @@ func TestCheckBeaconPartlyKnown(t *testing.T) {
 		t.Fatalf("one group key unknown: confirmed %v, %v", confirmed, err)
 	}
 }
+
+// A 404 on the validators endpoint is "state not found" in the beacon
+// API, not "no such validator": unknown keys are left out of a 200. So
+// every status but 200 is an error, and no key of the batch reads as
+// "no validator".
+func TestBeaconValidatorsNot200(t *testing.T) {
+	c := newCharonCluster(t, 2, 3, 4)
+	for _, code := range []int{http.StatusNotFound, http.StatusNoContent, http.StatusServiceUnavailable} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(code) }))
+		known, err := beaconValidators(context.Background(), srv.URL, c.groups)
+		srv.Close()
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprint(code)) {
+			t.Fatalf("HTTP %d: known %v, err %v", code, known, err)
+		}
+	}
+}
