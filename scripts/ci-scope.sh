@@ -29,9 +29,10 @@
 #                 signer-core/, tee-signer/ (the dv_share files and their
 #                 callers: server.go, importorder.go, config.go, start.go;
 #                 the job vets the whole module with the tag dvt),
-#                 signer-protocol/, signer-admin dv-split and the dv exit
-#                 commands (cmd/signer-admin dv*, commitments*, exit.go,
-#                 main.go, go.mod, scripts/build-admin.sh),
+#                 signer-protocol/, signer-admin/ (dv-split, the dv_share
+#                 import and chain check, the dv exit commands and their
+#                 helpers; the job runs all its tests with the tag dvt),
+#                 scripts/build-admin.sh,
 #                 governance/importorder/, governance/setupwire/, gateway/,
 #                 release/, the build scripts of the variants
 #                 (build-core.sh, build-runner.sh, build-runner-nts.sh,
@@ -80,9 +81,7 @@ dvt_changed() {
     case "$f" in
       *.md) ;;
       signer-core/* | tee-signer/* | signer-protocol/* | governance/importorder/* | governance/setupwire/* | \
-        signer-admin/cmd/signer-admin/dv* | signer-admin/cmd/signer-admin/commitments* | \
-        signer-admin/cmd/signer-admin/exit.go | signer-admin/cmd/signer-admin/main.go | signer-admin/go.mod | \
-        scripts/build-admin.sh | gateway/* | release/* | \
+        signer-admin/* | scripts/build-admin.sh | gateway/* | release/* | \
         scripts/build-core.sh | scripts/build-runner.sh | scripts/build-runner-nts.sh | scripts/generic-images.sh | \
         scripts/common.sh | scripts/dvt-test.sh | scripts/ci-scope.sh | Makefile | .github/workflows/ci.yml) return 0 ;;
     esac

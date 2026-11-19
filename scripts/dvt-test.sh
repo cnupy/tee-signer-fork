@@ -26,9 +26,10 @@
 #   go      go vet and the Go tests of the dvt-tagged packages with the tag
 #           dvt: signer-core/core, tee-signer and tee-signer/server (with
 #           the tags of runner-dev-dvt), under the race detector (RACE=
-#           turns it off); then signer-admin's vet with the tag dvt and its
-#           dvt tests: the exit route and those that drive a dvt dev runner
-#           (SIGNER_ADMIN_DVT_RUNNER)
+#           turns it off); then signer-admin's vet and all its tests with
+#           the tag dvt, those that drive a dvt dev runner included
+#           (SIGNER_ADMIN_DVT_RUNNER; the ones that need a default dev
+#           runner skip)
 #   ctest   the C suites of the DVT core build (signer-core/scripts/test.sh
 #           with DVT=1, no fuzzing: the nightly run fuzzes)
 # runner, link, admin and go need the libraries of core; ctest needs the vectors
@@ -168,11 +169,10 @@ t_go() {
   # shellcheck disable=SC2086
   if runner "$TMP/runner-dev-dvt-admin" "$tags" &&
     (cd "$ROOT/signer-admin" && go vet -tags dvt ./... && SIGNER_ADMIN_DVT_RUNNER="$TMP/runner-dev-dvt-admin" \
-      go test $race -count=1 -v -tags dvt -run '^(TestDVShareDevRunner|TestDVExit|TestDVTBuild|TestENRKey)' ./cmd/signer-admin |
-      grep -E '^(--- |ok|FAIL)'); then
-    ok "go: signer-admin vet and dvt tests, with a dvt dev runner"
+      go test $race -count=1 -v -tags dvt ./... | grep -E '^(--- FAIL|ok|FAIL|panic)'); then
+    ok "go: signer-admin vet and tests with -tags dvt, with a dvt dev runner"
   else
-    bad "go: signer-admin vet and dvt tests, with a dvt dev runner"
+    bad "go: signer-admin vet and tests with -tags dvt, with a dvt dev runner"
   fi
 }
 
